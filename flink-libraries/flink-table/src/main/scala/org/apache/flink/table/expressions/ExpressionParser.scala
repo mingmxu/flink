@@ -86,6 +86,7 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   lazy val FALSE: Keyword = Keyword("false")
   lazy val PRIMITIVE_ARRAY: Keyword = Keyword("PRIMITIVE_ARRAY")
   lazy val OBJECT_ARRAY: Keyword = Keyword("OBJECT_ARRAY")
+  lazy val MAP: Keyword = Keyword("MAP")
   lazy val BYTE: Keyword = Keyword("BYTE")
   lazy val SHORT: Keyword = Keyword("SHORT")
   lazy val INTERVAL_MONTHS: Keyword = Keyword("INTERVAL_MONTHS")
@@ -141,6 +142,7 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   lazy val dataType: PackratParser[TypeInformation[_]] =
     PRIMITIVE_ARRAY ~ "(" ~> dataType <~ ")" ^^ { ct => Types.PRIMITIVE_ARRAY(ct) } |
     OBJECT_ARRAY ~ "(" ~> dataType <~ ")" ^^ { ct => Types.OBJECT_ARRAY(ct) } |
+    MAP ~ "(" ~> dataType ~ "," ~ dataType <~ ")" ^^ { mt => Types.MAP(mt._1._1, mt._2)} |
     BYTE ^^ { e => Types.BYTE } |
     SHORT ^^ { e => Types.SHORT } |
     INTERVAL_MONTHS ^^ { e => Types.INTERVAL_MONTHS } |
@@ -201,7 +203,7 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   }
 
   lazy val atom: PackratParser[Expression] =
-    ( "(" ~> expression <~ ")" ) | literalExpr | fieldReference
+    ( "(" ~> expression <~ ")" ) | (fieldReference ||| literalExpr)
 
   lazy val over: PackratParser[Expression] = composite ~ OVER ~ fieldReference ^^ {
     case agg ~ _ ~ windowRef => UnresolvedOverCall(agg, windowRef)
@@ -469,13 +471,15 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
 
   lazy val timeIndicator: PackratParser[Expression] = proctime | rowtime
 
-  lazy val proctime: PackratParser[Expression] = fieldReference ~ "." ~ PROCTIME ^^ {
-    case f ~ _ ~ _ => ProctimeAttribute(f)
-  }
+  lazy val proctime: PackratParser[Expression] =
+    (aliasMapping | "(" ~> aliasMapping <~ ")" | fieldReference) ~ "." ~ PROCTIME ^^ {
+      case f ~ _ ~ _ => ProctimeAttribute(f)
+    }
 
-  lazy val rowtime: PackratParser[Expression] = fieldReference ~ "." ~ ROWTIME ^^ {
-    case f ~ _ ~ _ => RowtimeAttribute(f)
-  }
+  lazy val rowtime: PackratParser[Expression] =
+    (aliasMapping | "(" ~> aliasMapping <~ ")" | fieldReference) ~ "." ~ ROWTIME ^^ {
+      case f ~ _ ~ _ => RowtimeAttribute(f)
+    }
 
   // alias
 
@@ -484,6 +488,10 @@ object ExpressionParser extends JavaTokenParsers with PackratParsers {
   } | logic ~ AS ~ "(" ~ rep1sep(fieldReference, ",") ~ ")" ^^ {
     case e ~ _ ~ _ ~ names ~ _ => Alias(e, names.head.name, names.tail.map(_.name))
   } | logic
+
+  lazy val aliasMapping: PackratParser[Expression] = fieldReference ~ AS ~ fieldReference ^^ {
+      case e ~ _ ~ name => Alias(e, name.name)
+  }
 
   lazy val expression: PackratParser[Expression] = timeIndicator | overConstant | alias |
     failure("Invalid expression.")

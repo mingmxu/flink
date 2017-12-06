@@ -18,12 +18,13 @@
 
 package org.apache.flink.api.common;
 
-import com.esotericsoftware.kryo.Serializer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.configuration.TaskManagerOptions;
+
+import com.esotericsoftware.kryo.Serializer;
 
 import java.io.Serializable;
 import java.util.Collections;
@@ -145,6 +146,12 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
 	 * TaskManager error, usually killing the JVM.
 	 */
 	private long taskCancellationTimeoutMillis = -1;
+
+	/** This flag defines if we use compression for the state snapshot data or not. Default: false */
+	private boolean useSnapshotCompression = false;
+
+	/** Determines if a task fails or not if there is an error in writing its checkpoint data. Default: true */
+	private boolean failTaskOnCheckpointError = true;
 
 	// ------------------------------- User code values --------------------------------------------
 
@@ -567,16 +574,24 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
 	}
 
 	/**
-	 * Force Flink to use the AvroSerializer for POJOs.
+	 * Forces Flink to use the Apache Avro serializer for POJOs.
+	 *
+	 * <b>Important:</b> Make sure to include the <i>flink-avro</i> module.
 	 */
 	public void enableForceAvro() {
 		forceAvro = true;
 	}
 
+	/**
+	 * Disables the Apache Avro serializer as the forced serializer for POJOs.
+	 */
 	public void disableForceAvro() {
 		forceAvro = false;
 	}
 
+	/**
+	 * Returns whether the Apache Avro is the default serializer for POJOs.
+	 */
 	public boolean isForceAvroEnabled() {
 		return forceAvro;
 	}
@@ -840,6 +855,34 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
 		this.autoTypeRegistrationEnabled = false;
 	}
 
+	public boolean isUseSnapshotCompression() {
+		return useSnapshotCompression;
+	}
+
+	public void setUseSnapshotCompression(boolean useSnapshotCompression) {
+		this.useSnapshotCompression = useSnapshotCompression;
+	}
+
+	/**
+	 * This method is visible because of the way the configuration is currently forwarded from the checkpoint config to
+	 * the task. This should not be called by the user, please use CheckpointConfig.isFailTaskOnCheckpointError()
+	 * instead.
+	 */
+	@Internal
+	public boolean isFailTaskOnCheckpointError() {
+		return failTaskOnCheckpointError;
+	}
+
+	/**
+	 * This method is visible because of the way the configuration is currently forwarded from the checkpoint config to
+	 * the task. This should not be called by the user, please use CheckpointConfig.setFailOnCheckpointingErrors(...)
+	 * instead.
+	 */
+	@Internal
+	public void setFailTaskOnCheckpointError(boolean failTaskOnCheckpointError) {
+		this.failTaskOnCheckpointError = failTaskOnCheckpointError;
+	}
+
 	@Override
 	public boolean equals(Object obj) {
 		if (obj instanceof ExecutionConfig) {
@@ -864,7 +907,8 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
 				defaultKryoSerializerClasses.equals(other.defaultKryoSerializerClasses) &&
 				registeredKryoTypes.equals(other.registeredKryoTypes) &&
 				registeredPojoTypes.equals(other.registeredPojoTypes) &&
-				taskCancellationIntervalMillis == other.taskCancellationIntervalMillis;
+				taskCancellationIntervalMillis == other.taskCancellationIntervalMillis &&
+				useSnapshotCompression == other.useSnapshotCompression;
 
 		} else {
 			return false;
@@ -891,7 +935,8 @@ public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecut
 			defaultKryoSerializerClasses,
 			registeredKryoTypes,
 			registeredPojoTypes,
-			taskCancellationIntervalMillis);
+			taskCancellationIntervalMillis,
+			useSnapshotCompression);
 	}
 
 	public boolean canEqual(Object obj) {

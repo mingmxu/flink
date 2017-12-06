@@ -63,7 +63,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 @Internal
 public abstract class AbstractMetricGroup<A extends AbstractMetricGroup<?>> implements MetricGroup {
 
-	private static final Logger LOG = LoggerFactory.getLogger(MetricGroup.class);
+	protected static final Logger LOG = LoggerFactory.getLogger(MetricGroup.class);
 
 	// ------------------------------------------------------------------------
 
@@ -106,7 +106,7 @@ public abstract class AbstractMetricGroup<A extends AbstractMetricGroup<?>> impl
 		this.registry = checkNotNull(registry);
 		this.scopeComponents = checkNotNull(scope);
 		this.parent = parent;
-		this.scopeStrings = new String[registry.getReporters() == null ? 0 : registry.getReporters().size()];
+		this.scopeStrings = new String[registry.getNumberReporters()];
 	}
 
 	public Map<String, String> getAllVariables() {

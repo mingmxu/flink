@@ -24,13 +24,17 @@ import org.apache.commons.io.FileUtils;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
+import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedHaServices;
+import org.apache.flink.runtime.metrics.NoOpMetricRegistry;
 import org.apache.flink.runtime.testingUtils.TestingUtils;
 import org.apache.flink.runtime.util.StartupUtils;
 import org.apache.flink.util.NetUtils;
+import org.apache.flink.util.TestLogger;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -49,7 +53,7 @@ import java.util.UUID;
  * Tests that check how the TaskManager behaves when encountering startup
  * problems.
  */
-public class TaskManagerStartupTest {
+public class TaskManagerStartupTest extends TestLogger {
 
 	private HighAvailabilityServices highAvailabilityServices;
 
@@ -95,7 +99,7 @@ public class TaskManagerStartupTest {
 			fail("This should fail with an IOException");
 
 		}
-		catch (IOException e) {
+		catch (Exception e) {
 			// expected. validate the error message
 			List<Throwable> causes = StartupUtils.getExceptionCauses(e, new ArrayList<Throwable>());
 			for (Throwable cause : causes) {
@@ -103,11 +107,8 @@ public class TaskManagerStartupTest {
 					throw (BindException) cause;
 				}
 			}
+
 			fail("This should fail with an exception caused by BindException");
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
 		}
 		finally {
 			if (blocker != null) {
@@ -142,8 +143,8 @@ public class TaskManagerStartupTest {
 			Configuration cfg = new Configuration();
 			cfg.setString(ConfigConstants.TASK_MANAGER_TMP_DIR_KEY, nonWritable.getAbsolutePath());
 			cfg.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, 4L);
-			cfg.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, "localhost");
-			cfg.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, 21656);
+			cfg.setString(JobManagerOptions.ADDRESS, "localhost");
+			cfg.setInteger(JobManagerOptions.PORT, 21656);
 
 			try {
 				TaskManager.runTaskManager(
@@ -184,9 +185,9 @@ public class TaskManagerStartupTest {
 	public void testMemoryConfigWrong() {
 		try {
 			Configuration cfg = new Configuration();
-			cfg.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, "localhost");
-			cfg.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, 21656);
-			cfg.setString(ConfigConstants.TASK_MANAGER_MEMORY_PRE_ALLOCATE_KEY, "true");
+			cfg.setString(JobManagerOptions.ADDRESS, "localhost");
+			cfg.setInteger(JobManagerOptions.PORT, 21656);
+			cfg.setBoolean(TaskManagerOptions.MANAGED_MEMORY_PRE_ALLOCATE, true);
 
 			// something invalid
 			cfg.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, -42L);
@@ -249,6 +250,7 @@ public class TaskManagerStartupTest {
 				ResourceID.generate(),
 				null,
 				highAvailabilityServices,
+				new NoOpMetricRegistry(),
 				"localhost",
 				Option.<String>empty(),
 				false,

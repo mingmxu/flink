@@ -67,7 +67,7 @@ case class Sum(child: Expression) extends Aggregation {
   override private[flink] def getSqlAggFunction()(implicit relBuilder: RelBuilder) = {
     val returnType = relBuilder
       .getTypeFactory.asInstanceOf[FlinkTypeFactory]
-      .createTypeFromTypeInfo(resultType)
+      .createTypeFromTypeInfo(resultType, isNullable = true)
     new SqlSumAggFunction(returnType)
   }
 }
@@ -228,12 +228,14 @@ case class VarSamp(child: Expression) extends Aggregation {
 
 case class AggFunctionCall(
     aggregateFunction: AggregateFunction[_, _],
+    resultTypeInfo: TypeInformation[_],
+    accTypeInfo: TypeInformation[_],
     args: Seq[Expression])
   extends Aggregation {
 
   override private[flink] def children: Seq[Expression] = args
 
-  override def resultType: TypeInformation[_] = getResultTypeOfAggregateFunction(aggregateFunction)
+  override def resultType: TypeInformation[_] = resultTypeInfo
 
   override def validateInput(): ValidationResult = {
     val signature = children.map(_.resultType)
@@ -243,8 +245,10 @@ case class AggFunctionCall(
       ValidationFailure(s"Given parameters do not match any signature. \n" +
                           s"Actual: ${signatureToString(signature)} \n" +
                           s"Expected: ${
-                            getMethodSignatures(aggregateFunction, "accumulate").drop(1)
-                              .map(signatureToString).mkString(", ")}")
+                            getMethodSignatures(aggregateFunction, "accumulate")
+                              .map(_.drop(1))
+                              .map(signatureToString)
+                              .mkString(", ")}")
     } else {
       ValidationSuccess
     }
@@ -258,12 +262,14 @@ case class AggFunctionCall(
 
   override private[flink] def getSqlAggFunction()(implicit relBuilder: RelBuilder) = {
     val typeFactory = relBuilder.getTypeFactory.asInstanceOf[FlinkTypeFactory]
-    val sqlAgg = AggSqlFunction(aggregateFunction.getClass.getSimpleName,
-                   aggregateFunction,
-                   resultType,
-                   typeFactory,
-                   aggregateFunction.requiresOver)
-    sqlAgg
+    AggSqlFunction(
+      aggregateFunction.functionIdentifier,
+      aggregateFunction.toString,
+      aggregateFunction,
+      resultType,
+      accTypeInfo,
+      typeFactory,
+      aggregateFunction.requiresOver)
   }
 
   override private[flink] def toRexNode(implicit relBuilder: RelBuilder): RexNode = {

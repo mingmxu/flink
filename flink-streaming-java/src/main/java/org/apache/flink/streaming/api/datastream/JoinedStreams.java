@@ -42,7 +42,7 @@ import static java.util.Objects.requireNonNull;
  * <p>To finalize the join operation you also need to specify a {@link KeySelector} for
  * both the first and second input and a {@link WindowAssigner}.
  *
- * <p>Note: Right now, the the join is being evaluated in memory so you need to ensure that the number
+ * <p>Note: Right now, the join is being evaluated in memory so you need to ensure that the number
  * of elements per key does not get too high. Otherwise the JVM might crash.
  *
  * <p>Example:
@@ -221,14 +221,18 @@ public class JoinedStreams<T1, T2> {
 		 */
 		public <T> DataStream<T> apply(JoinFunction<T1, T2, T> function) {
 			TypeInformation<T> resultType = TypeExtractor.getBinaryOperatorReturnType(
-					function,
-					JoinFunction.class,
-					true,
-					true,
-					input1.getType(),
-					input2.getType(),
-					"Join",
-					false);
+				function,
+				JoinFunction.class,
+				0,
+				1,
+				2,
+				new int[]{0},
+				new int[]{1},
+				TypeExtractor.NO_INDEX,
+				input1.getType(),
+				input2.getType(),
+				"Join",
+				false);
 
 			return apply(function, resultType);
 		}
@@ -300,14 +304,18 @@ public class JoinedStreams<T1, T2> {
 		 */
 		public <T> DataStream<T> apply(FlatJoinFunction<T1, T2, T> function) {
 			TypeInformation<T> resultType = TypeExtractor.getBinaryOperatorReturnType(
-					function,
-					FlatJoinFunction.class,
-					true,
-					true,
-					input1.getType(),
-					input2.getType(),
-					"Join",
-					false);
+				function,
+				FlatJoinFunction.class,
+				0,
+				1,
+				2,
+				new int[]{0},
+				new int[]{1},
+				new int[]{2, 0},
+				input1.getType(),
+				input2.getType(),
+				"Join",
+				false);
 
 			return apply(function, resultType);
 		}

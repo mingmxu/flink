@@ -24,6 +24,7 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.StreamTestSingleInputGate;
+import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
@@ -33,6 +34,7 @@ import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.graph.StreamEdge;
 import org.apache.flink.streaming.api.graph.StreamNode;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
+import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.runtime.partitioner.BroadcastPartitioner;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
@@ -142,6 +144,7 @@ public class StreamTaskTestHarness<OUT> {
 		streamConfig.setNumberOfOutputs(1);
 		streamConfig.setTypeSerializerOut(outputSerializer);
 		streamConfig.setVertexID(0);
+		streamConfig.setOperatorID(new OperatorID(4711L, 123L));
 
 		StreamOperator<OUT> dummyOperator = new AbstractStreamOperator<OUT>() {
 			private static final long serialVersionUID = 1L;
@@ -366,6 +369,10 @@ public class StreamTaskTestHarness<OUT> {
 		for (int i = 0; i < numInputGates; i++) {
 			inputGates[i].endInput();
 		}
+	}
+
+	public StreamConfigChainer setupOperatorChain(OperatorID headOperatorId, OneInputStreamOperator<?, ?> headOperator) {
+		return new StreamConfigChainer(headOperatorId, headOperator, getStreamConfig());
 	}
 
 	// ------------------------------------------------------------------------

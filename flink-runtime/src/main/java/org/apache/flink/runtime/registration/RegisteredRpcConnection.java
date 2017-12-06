@@ -20,13 +20,12 @@ package org.apache.flink.runtime.registration;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.runtime.rpc.RpcGateway;
-import org.apache.flink.runtime.concurrent.AcceptFunction;
-import org.apache.flink.runtime.concurrent.ApplyFunction;
-import org.apache.flink.runtime.concurrent.Future;
 
 import org.slf4j.Logger;
 
-import java.util.UUID;
+import java.io.Serializable;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -41,43 +40,39 @@ import static org.apache.flink.util.Preconditions.checkState;
  * The RPC connection can be closed, for example when the target where it tries to register
  * at looses leader status.
  *
- * @param <Gateway> The type of the gateway to connect to.
- * @param <Success> The type of the successful registration responses.
+ * @param <F> The type of the fencing token
+ * @param <G> The type of the gateway to connect to.
+ * @param <S> The type of the successful registration responses.
  */
-public abstract class RegisteredRpcConnection<Gateway extends RpcGateway, Success extends RegistrationResponse.Success> {
+public abstract class RegisteredRpcConnection<F extends Serializable, G extends RpcGateway, S extends RegistrationResponse.Success> {
 
-	/** the logger for all log messages of this class */
+	/** The logger for all log messages of this class. */
 	protected final Logger log;
 
-	/** the target component leaderID, for example the ResourceManager leaderID */
-	private final UUID targetLeaderId;
+	/** The fencing token fo the remote component. */
+	private final F fencingToken;
 
-	/** the target component Address, for example the ResourceManager Address */
+	/** The target component Address, for example the ResourceManager Address. */
 	private final String targetAddress;
 
-	/** Execution context to be used to execute the on complete action of the ResourceManagerRegistration */
+	/** Execution context to be used to execute the on complete action of the ResourceManagerRegistration. */
 	private final Executor executor;
 
-	/** the Registration of this RPC connection */
-	private RetryingRegistration<Gateway, Success> pendingRegistration;
+	/** The Registration of this RPC connection. */
+	private RetryingRegistration<F, G, S> pendingRegistration;
 
-	/** the gateway to register, it's null until the registration is completed */
-	private volatile Gateway targetGateway;
+	/** The gateway to register, it's null until the registration is completed. */
+	private volatile G targetGateway;
 
-	/** flag indicating that the RPC connection is closed */
+	/** Flag indicating that the RPC connection is closed. */
 	private volatile boolean closed;
 
 	// ------------------------------------------------------------------------
 
-	public RegisteredRpcConnection(
-		Logger log,
-		String targetAddress,
-		UUID targetLeaderId,
-		Executor executor)
-	{
+	public RegisteredRpcConnection(Logger log, String targetAddress, F fencingToken, Executor executor) {
 		this.log = checkNotNull(log);
 		this.targetAddress = checkNotNull(targetAddress);
-		this.targetLeaderId = checkNotNull(targetLeaderId);
+		this.fencingToken = checkNotNull(fencingToken);
 		this.executor = checkNotNull(executor);
 	}
 
@@ -93,43 +88,43 @@ public abstract class RegisteredRpcConnection<Gateway extends RpcGateway, Succes
 		pendingRegistration = checkNotNull(generateRegistration());
 		pendingRegistration.startRegistration();
 
-		Future<Tuple2<Gateway, Success>> future = pendingRegistration.getFuture();
+		CompletableFuture<Tuple2<G, S>> future = pendingRegistration.getFuture();
 
-		Future<Void> registrationSuccessFuture = future.thenAcceptAsync(new AcceptFunction<Tuple2<Gateway, Success>>() {
-			@Override
-			public void accept(Tuple2<Gateway, Success> result) {
-				targetGateway = result.f0;
-				onRegistrationSuccess(result.f1);
-			}
-		}, executor);
-
-		// this future should only ever fail if there is a bug, not if the registration is declined
-		registrationSuccessFuture.exceptionallyAsync(new ApplyFunction<Throwable, Void>() {
-			@Override
-			public Void apply(Throwable failure) {
-				onRegistrationFailure(failure);
-				return null;
-			}
-		}, executor);
+		future.whenCompleteAsync(
+			(Tuple2<G, S> result, Throwable failure) -> {
+				if (failure != null) {
+					if (failure instanceof CancellationException) {
+						// we ignore cancellation exceptions because they originate from cancelling
+						// the RetryingRegistration
+						log.debug("Retrying registration towards {} was cancelled.", targetAddress);
+					} else {
+						// this future should only ever fail if there is a bug, not if the registration is declined
+						onRegistrationFailure(failure);
+					}
+				} else {
+					targetGateway = result.f0;
+					onRegistrationSuccess(result.f1);
+				}
+			}, executor);
 	}
 
 	/**
-	 * This method generate a specific Registration, for example TaskExecutor Registration at the ResourceManager
+	 * This method generate a specific Registration, for example TaskExecutor Registration at the ResourceManager.
 	 */
-	protected abstract RetryingRegistration<Gateway, Success> generateRegistration();
+	protected abstract RetryingRegistration<F, G, S> generateRegistration();
 
 	/**
-	 * This method handle the Registration Response
+	 * This method handle the Registration Response.
 	 */
-	protected abstract void onRegistrationSuccess(Success success);
+	protected abstract void onRegistrationSuccess(S success);
 
 	/**
-	 * This method handle the Registration failure
+	 * This method handle the Registration failure.
 	 */
 	protected abstract void onRegistrationFailure(Throwable failure);
 
 	/**
-	 * close connection
+	 * Close connection.
 	 */
 	public void close() {
 		closed = true;
@@ -148,8 +143,8 @@ public abstract class RegisteredRpcConnection<Gateway extends RpcGateway, Succes
 	//  Properties
 	// ------------------------------------------------------------------------
 
-	public UUID getTargetLeaderId() {
-		return targetLeaderId;
+	public F getTargetLeaderId() {
+		return fencingToken;
 	}
 
 	public String getTargetAddress() {
@@ -159,7 +154,7 @@ public abstract class RegisteredRpcConnection<Gateway extends RpcGateway, Succes
 	/**
 	 * Gets the RegisteredGateway. This returns null until the registration is completed.
 	 */
-	public Gateway getTargetGateway() {
+	public G getTargetGateway() {
 		return targetGateway;
 	}
 
@@ -171,7 +166,7 @@ public abstract class RegisteredRpcConnection<Gateway extends RpcGateway, Succes
 
 	@Override
 	public String toString() {
-		String connectionInfo = "(ADDRESS: " + targetAddress + " LEADERID: " + targetLeaderId + ")";
+		String connectionInfo = "(ADDRESS: " + targetAddress + " FENCINGTOKEN: " + fencingToken + ")";
 
 		if (isConnected()) {
 			connectionInfo = "RPC connection to " + targetGateway.getClass().getSimpleName() + " " + connectionInfo;

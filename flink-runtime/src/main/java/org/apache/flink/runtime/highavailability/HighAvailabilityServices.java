@@ -73,12 +73,30 @@ public interface HighAvailabilityServices extends AutoCloseable {
 	LeaderRetrievalService getResourceManagerLeaderRetriever();
 
 	/**
+	 * Gets the leader retriever for the dispatcher. This leader retrieval service
+	 * is not always accessible.
+	 */
+	LeaderRetrievalService getDispatcherLeaderRetriever();
+
+	/**
 	 * Gets the leader retriever for the job JobMaster which is responsible for the given job
 	 *
 	 * @param jobID The identifier of the job.
 	 * @return Leader retrieval service to retrieve the job manager for the given job
+	 * @deprecated This method should only be used by non Flip-6 code where the JobManager acts as the master.
 	 */
+	@Deprecated
 	LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID);
+
+	/**
+	 * Gets the leader retriever for the job JobMaster which is responsible for the given job
+	 *
+	 * @param jobID The identifier of the job.
+	 * @param defaultJobManagerAddress JobManager address which will be returned by
+	 *                              a static leader retrieval service.
+	 * @return Leader retrieval service to retrieve the job manager for the given job
+	 */
+	LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID, String defaultJobManagerAddress);
 
 	/**
 	 * Gets the leader election service for the cluster's resource manager.
@@ -86,6 +104,13 @@ public interface HighAvailabilityServices extends AutoCloseable {
 	 * @return Leader election service for the resource manager leader election
 	 */
 	LeaderElectionService getResourceManagerLeaderElectionService();
+
+	/**
+	 * Gets the leader election service for the cluster's dispatcher.
+	 *
+	 * @return Leader election service for the dispatcher leader election
+	 */
+	LeaderElectionService getDispatcherLeaderElectionService();
 
 	/**
 	 * Gets the leader election service for the given job.

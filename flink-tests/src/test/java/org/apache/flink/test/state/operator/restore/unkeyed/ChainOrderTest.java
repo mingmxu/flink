@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.test.state.operator.restore.unkeyed;
 
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -32,6 +33,10 @@ import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.c
  * Verifies that the state of all operators is restored if a topology change causes the ordering of a chain to change.
  */
 public class ChainOrderTest extends AbstractNonKeyedOperatorRestoreTestBase {
+
+	public ChainOrderTest(String savepointPath) {
+		super(savepointPath);
+	}
 
 	@Override
 	public void createRestoredJob(StreamExecutionEnvironment env) {

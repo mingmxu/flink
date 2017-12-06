@@ -15,16 +15,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.test.state.operator.restore;
 
-import akka.actor.ActorRef;
-import akka.actor.ActorSystem;
-import akka.actor.PoisonPill;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.akka.ListeningBehaviour;
+import org.apache.flink.runtime.checkpoint.savepoint.SavepointSerializers;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils;
@@ -35,6 +34,7 @@ import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.jobmanager.JobManager;
 import org.apache.flink.runtime.messages.JobManagerMessages;
+import org.apache.flink.runtime.metrics.NoOpMetricRegistry;
 import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.runtime.taskmanager.TaskManager;
 import org.apache.flink.runtime.testingUtils.TestingJobManager;
@@ -48,28 +48,33 @@ import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator;
 import org.apache.flink.util.TestLogger;
+
+import akka.actor.ActorRef;
+import akka.actor.ActorSystem;
+import akka.actor.PoisonPill;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+
+import java.io.File;
+import java.net.URL;
+import java.util.concurrent.TimeUnit;
+
 import scala.Option;
 import scala.Tuple2;
 import scala.concurrent.Await;
 import scala.concurrent.Future;
 import scala.concurrent.duration.FiniteDuration;
 
-import java.io.File;
-import java.net.URL;
-import java.util.concurrent.TimeUnit;
-
 /**
- * Abstract class to verify that it is possible to migrate a 1.2 savepoint to 1.3 and that the topology can be modified
- * from that point on.
- * 
- * The verification is done in 2 Steps:
- * Step 1: Migrate the job to 1.3 by submitting the same job used for the 1.2 savepoint, and create a new savepoint.
+ * Abstract class to verify that it is possible to migrate a savepoint across upgraded Flink versions and that the
+ * topology can be modified from that point on.
+ *
+ * <p>The verification is done in 2 Steps:
+ * Step 1: Migrate the job to the newer version by submitting the same job used for the old version savepoint, and create a new savepoint.
  * Step 2: Modify the job topology, and restore from the savepoint created in step 1.
  */
 public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
@@ -84,6 +89,20 @@ public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
 	private static ActorGateway taskManager = null;
 
 	private static final FiniteDuration timeout = new FiniteDuration(30L, TimeUnit.SECONDS);
+	private final boolean allowNonRestoredState;
+
+	protected AbstractOperatorRestoreTestBase() {
+		this(true);
+	}
+
+	protected AbstractOperatorRestoreTestBase(boolean allowNonRestoredState) {
+		this.allowNonRestoredState = allowNonRestoredState;
+	}
+
+	@BeforeClass
+	public static void beforeClass() {
+		SavepointSerializers.setFailWhenLegacyStateDetected(false);
+	}
 
 	@BeforeClass
 	public static void setupCluster() throws Exception {
@@ -103,6 +122,8 @@ public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
 			TestingUtils.defaultExecutor(),
 			TestingUtils.defaultExecutor(),
 			highAvailabilityServices,
+			new NoOpMetricRegistry(),
+			Option.empty(),
 			Option.apply("jm"),
 			Option.apply("arch"),
 			TestingJobManager.class,
@@ -123,6 +144,7 @@ public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
 			ResourceID.generate(),
 			actorSystem,
 			highAvailabilityServices,
+			new NoOpMetricRegistry(),
 			"localhost",
 			Option.apply("tm"),
 			true,
@@ -160,9 +182,9 @@ public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
 
 	@Test
 	public void testMigrationAndRestore() throws Throwable {
-		// submit 1.2 job and create a migrated 1.3 savepoint
+		// submit job with old version savepoint and create a migrated savepoint in the new version
 		String savepointPath = migrateJob();
-		// restore from migrated 1.3 savepoint
+		// restore from migrated new version savepoint
 		restoreJob(savepointPath);
 	}
 
@@ -194,8 +216,20 @@ public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
 		// Trigger savepoint
 		File targetDirectory = tmpFolder.newFolder();
 		msg = new JobManagerMessages.CancelJobWithSavepoint(jobToMigrate.getJobID(), targetDirectory.getAbsolutePath());
-		Future<Object> future = jobManager.ask(msg, timeout);
-		result = Await.result(future, timeout);
+
+		// FLINK-6918: Retry cancel with savepoint message in case that StreamTasks were not running
+		// TODO: The retry logic should be removed once the StreamTask lifecycle has been fixed (see FLINK-4714)
+		boolean retry = true;
+		for (int i = 0; retry && i < 10; i++) {
+			Future<Object> future = jobManager.ask(msg, timeout);
+			result = Await.result(future, timeout);
+
+			if (result instanceof JobManagerMessages.CancellationFailure) {
+				Thread.sleep(50L);
+			} else {
+				retry = false;
+			}
+		}
 
 		if (result instanceof JobManagerMessages.CancellationFailure) {
 			JobManagerMessages.CancellationFailure failure = (JobManagerMessages.CancellationFailure) result;
@@ -213,7 +247,7 @@ public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
 
 	private void restoreJob(String savepointPath) throws Exception {
 		JobGraph jobToRestore = createJobGraph(ExecutionMode.RESTORE);
-		jobToRestore.setSavepointRestoreSettings(SavepointRestoreSettings.forPath(savepointPath, true));
+		jobToRestore.setSavepointRestoreSettings(SavepointRestoreSettings.forPath(savepointPath, allowNonRestoredState));
 
 		Object msg;
 		Object result;
@@ -256,14 +290,14 @@ public abstract class AbstractOperatorRestoreTestBase extends TestLogger {
 	}
 
 	/**
-	 * Recreates the job used to create the 1.2 savepoint.
+	 * Recreates the job used to create the new version savepoint.
 	 *
 	 * @param env StreamExecutionEnvironment to use
 	 */
 	protected abstract void createMigrationJob(StreamExecutionEnvironment env);
 
 	/**
-	 * Creates a modified version of the job used to create the 1.2 savepoint.
+	 * Creates a modified version of the job used to create the new version savepoint.
 	 *
 	 * @param env StreamExecutionEnvironment to use
 	 */

@@ -24,7 +24,6 @@ import org.apache.curator.framework.recipes.cache.ChildData;
 import org.apache.curator.framework.recipes.cache.NodeCache;
 import org.apache.curator.framework.recipes.cache.NodeCacheListener;
 import org.apache.curator.test.TestingServer;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService;
@@ -298,7 +297,7 @@ public class ZooKeeperLeaderElectionTest extends TestLogger {
 		final String FAULTY_CONTENDER_URL = "faultyContender";
 		final String leaderPath = "/leader";
 
-		configuration.setString(ConfigConstants.HA_ZOOKEEPER_LEADER_PATH, leaderPath);
+		configuration.setString(HighAvailabilityOptions.HA_ZOOKEEPER_LEADER_PATH, leaderPath);
 
 		ZooKeeperLeaderElectionService leaderElectionService = null;
 		ZooKeeperLeaderRetrievalService leaderRetrievalService = null;
@@ -463,8 +462,7 @@ public class ZooKeeperLeaderElectionTest extends TestLogger {
 			testingContender = new TestingContender(TEST_URL, leaderElectionService);
 			listener = new TestingListener();
 
-			final String leaderPath = configuration.getString(ConfigConstants.HA_ZOOKEEPER_LEADER_PATH,
-					ConfigConstants.DEFAULT_ZOOKEEPER_LEADER_PATH);
+			final String leaderPath = configuration.getString(HighAvailabilityOptions.HA_ZOOKEEPER_LEADER_PATH);
 			cache = new NodeCache(client2, leaderPath);
 
 			ExistsCacheListener existsListener = new ExistsCacheListener(cache);

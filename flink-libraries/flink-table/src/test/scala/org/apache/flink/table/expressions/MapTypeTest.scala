@@ -18,55 +18,189 @@
 
 package org.apache.flink.table.expressions
 
-import java.util.{HashMap => JHashMap}
+import java.sql.Date
 
-import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
-import org.apache.flink.api.java.typeutils.{MapTypeInfo, RowTypeInfo}
-import org.apache.flink.table.api.ValidationException
-import org.apache.flink.table.expressions.utils.ExpressionTestBase
-import org.apache.flink.types.Row
+import org.apache.flink.table.api.Types
+import org.apache.flink.table.api.scala._
+import org.apache.flink.table.expressions.utils.MapTypeTestBase
 import org.junit.Test
 
-class MapTypeTest extends ExpressionTestBase {
+class MapTypeTest extends MapTypeTestBase {
 
-  @Test(expected = classOf[ValidationException])
-  def testWrongKeyType(): Unit = {
-    testSqlApi("f4[12]", "FAIL")
+  @Test
+  def testMapLiteral(): Unit = {
+    // primitive literals
+    testAllApis(map(1, 1), "map(1, 1)", "MAP[1, 1]", "{1=1}")
+
+    testAllApis(
+      map(true, true),
+      "map(true, true)",
+      "map[TRUE, TRUE]",
+      "{true=true}")
+
+    // object literals
+    testTableApi(map(BigDecimal(1), BigDecimal(1)), "map(1p, 1p)", "{1=1}")
+
+    testAllApis(
+      map(map(1, 2), map(3, 4)),
+      "map(map(1, 2), map(3, 4))",
+      "MAP[MAP[1, 2], MAP[3, 4]]",
+      "{{1=2}={3=4}}")
+
+    testAllApis(
+      map(1 + 2, 3 * 3, 6 / 3, 4 - 2),
+      "map(1 + 2, 3 * 3, 6 / 3, 4 - 2)",
+      "map[1 + 2, 3 * 3, 6 / 3, 4 - 2]",
+      "{2=2, 3=9}")
+
+    testAllApis(
+      map(1, Null(Types.INT)),
+      "map(1, Null(INT))",
+      "map[1, NULLIF(1,1)]",
+      "{1=null}")
+
+    // explicit conversion
+    testAllApis(
+      map(1, 2L , 3, 4L),
+      "map(1, 2L, 3, 4L)",
+      "MAP[1, CAST(2 AS BIGINT), 3, CAST(4 AS BIGINT)]",
+      "{1=2, 3=4}")
+
+    testAllApis(
+      map(Date.valueOf("1985-04-11"), 1),
+      "map('1985-04-11'.toDate, 1)",
+      "MAP[DATE '1985-04-11', 1]",
+      "{1985-04-11=1}")
+
+    testAllApis(
+      map(BigDecimal(2.0002), BigDecimal(2.0003)),
+      "map(2.0002p, 2.0003p)",
+      "MAP[CAST(2.0002 AS DECIMAL), CAST(2.0003 AS DECIMAL)]",
+      "{2.0002=2.0003}")
   }
 
   @Test
-  def testItem(): Unit = {
-    testSqlApi("f0['map is null']", "null")
-    testSqlApi("f1['map is empty']", "null")
-    testSqlApi("f2['b']", "13")
-    testSqlApi("f3[1]", "null")
-    testSqlApi("f3[12]", "a")
+  def testMapField(): Unit = {
+    testAllApis(
+      map('f4, 'f5),
+      "map(f4, f5)",
+      "MAP[f4, f5]",
+      "{foo=12}")
+
+    testAllApis(
+      map('f4, 'f1),
+      "map(f4, f1)",
+      "MAP[f4, f1]",
+      "{foo={}}")
+
+    testAllApis(
+      map('f2, 'f3),
+      "map(f2, f3)",
+      "MAP[f2, f3]",
+      "{{a=12, b=13}={12=a, 13=b}}")
+
+    testAllApis(
+      map('f1.at("a"), 'f5),
+      "map(f1.at('a'), f5)",
+      "MAP[f1['a'], f5]",
+      "{null=12}")
+
+    testAllApis(
+      'f1,
+      "f1",
+      "f1",
+      "{}")
+
+    testAllApis(
+      'f2,
+      "f2",
+      "f2",
+      "{a=12, b=13}")
+
+    testAllApis(
+      'f2.at("a"),
+      "f2.at('a')",
+      "f2['a']",
+      "12")
+
+    testAllApis(
+      'f3.at(12),
+      "f3.at(12)",
+      "f3[12]",
+      "a")
+
+    testAllApis(
+      map('f4, 'f3).at("foo").at(13),
+      "map(f4, f3).at('foo').at(13)",
+      "MAP[f4, f3]['foo'][13]",
+      "b")
   }
 
-  // ----------------------------------------------------------------------------------------------
+  @Test
+  def testMapOperations(): Unit = {
 
-  override def testData: Any = {
-    val testData = new Row(4)
-    testData.setField(0, null)
-    testData.setField(1, new JHashMap[String, Int]())
-    val map = new JHashMap[String, Int]()
-    map.put("a", 12)
-    map.put("b", 13)
-    testData.setField(2, map)
-    val map2 = new JHashMap[Int, String]()
-    map2.put(12, "a")
-    map2.put(13, "b")
-    testData.setField(3, map2)
-    testData
+    // comparison
+    testAllApis(
+      'f1 === 'f2,
+      "f1 === f2",
+      "f1 = f2",
+      "false")
+
+    testAllApis(
+      'f3 === 'f7,
+      "f3 === f7",
+      "f3 = f7",
+      "true")
+
+    testAllApis(
+      'f5 === 'f2.at("a"),
+      "f5 === f2.at('a')",
+      "f5 = f2['a']",
+      "true")
+
+    testAllApis(
+      'f0.at("map is null"),
+      "f0.at('map is null')",
+      "f0['map is null']",
+      "null")
+
+    testAllApis(
+      'f1.at("map is empty"),
+      "f1.at('map is empty')",
+      "f1['map is empty']",
+      "null")
+
+    testAllApis(
+      'f2.at("b"),
+      "f2.at('b')",
+      "f2['b']",
+      "13")
+
+    testAllApis(
+      'f3.at(1),
+      "f3.at(1)",
+      "f3[1]",
+      "null")
+
+    testAllApis(
+      'f3.at(12),
+      "f3.at(12)",
+      "f3[12]",
+      "a")
+
+    testAllApis(
+      'f3.cardinality(),
+      "f3.cardinality()",
+      "CARDINALITY(f3)",
+      "2")
   }
 
-  override def typeInfo: TypeInformation[Any] = {
-    new RowTypeInfo(
-      new MapTypeInfo(BasicTypeInfo.STRING_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO),
-      new MapTypeInfo(BasicTypeInfo.STRING_TYPE_INFO, BasicTypeInfo.INT_TYPE_INFO),
-      new MapTypeInfo(BasicTypeInfo.STRING_TYPE_INFO, BasicTypeInfo.INT_TYPE_INFO),
-      new MapTypeInfo(BasicTypeInfo.INT_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO)
-    ).asInstanceOf[TypeInformation[Any]]
+  @Test
+  def testMapTypeCasting(): Unit = {
+    testTableApi(
+      'f2.cast(Types.MAP(Types.STRING, Types.INT)),
+      "f2.cast(MAP(STRING, INT))",
+      "{a=12, b=13}"
+    )
   }
-
 }

@@ -24,16 +24,18 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.io.InputSplit;
 import org.apache.flink.core.testutils.CommonTestUtils;
-import org.apache.flink.runtime.blob.BlobKey;
+import org.apache.flink.runtime.blob.BlobCacheService;
+import org.apache.flink.runtime.blob.PermanentBlobCache;
+import org.apache.flink.runtime.blob.TransientBlobCache;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
-import org.apache.flink.runtime.checkpoint.SubtaskState;
+import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
-import org.apache.flink.runtime.concurrent.Future;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
 import org.apache.flink.runtime.execution.ExecutionState;
-import org.apache.flink.runtime.execution.librarycache.FallbackLibraryCacheManager;
+import org.apache.flink.runtime.execution.librarycache.BlobLibraryCacheManager;
+import org.apache.flink.runtime.execution.librarycache.FlinkUserCodeClassLoaders;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.JobInformation;
 import org.apache.flink.runtime.executiongraph.TaskInformation;
@@ -64,13 +66,14 @@ import org.apache.flink.util.SerializedValue;
 
 import org.junit.Test;
 
-import java.net.URL;
 import java.util.Collections;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 import static org.junit.Assume.assumeTrue;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Test that verifies the behavior of blocking shutdown hooks and of the
@@ -82,9 +85,6 @@ public class JvmExitOnFatalErrorTest {
 	public void testExitJvmOnOutOfMemory() throws Exception {
 		// this test works only on linux
 		assumeTrue(OperatingSystem.isLinux());
-
-		// this test leaves remaining processes if not executed with Java 8
-		CommonTestUtils.assumeJava8();
 
 		// to check what went wrong (when the test hangs) uncomment this line 
 //		ProcessEntryPoint.main(new String[0]);
@@ -147,7 +147,7 @@ public class JvmExitOnFatalErrorTest {
 
 				final JobInformation jobInformation = new JobInformation(
 						jid, "Test Job", execConfig, new Configuration(),
-						Collections.<BlobKey>emptyList(), Collections.<URL>emptyList());
+						Collections.emptyList(), Collections.emptyList());
 
 				final TaskInformation taskInformation = new TaskInformation(
 						jobVertexId, "Test Task", 1, 1, OomInvokable.class.getName(), new Configuration());
@@ -161,6 +161,9 @@ public class JvmExitOnFatalErrorTest {
 				final TaskManagerRuntimeInfo tmInfo = TaskManagerConfiguration.fromConfiguration(taskManagerConfig);
 
 				final Executor executor = Executors.newCachedThreadPool();
+
+				BlobCacheService blobService =
+					new BlobCacheService(mock(PermanentBlobCache.class), mock(TransientBlobCache.class));
 
 				Task task = new Task(
 						jobInformation,
@@ -180,7 +183,11 @@ public class JvmExitOnFatalErrorTest {
 						new NoOpTaskManagerActions(),
 						new NoOpInputSplitProvider(),
 						new NoOpCheckpointResponder(),
-						new FallbackLibraryCacheManager(),
+						blobService,
+						new BlobLibraryCacheManager(
+							blobService.getPermanentBlobService(),
+							FlinkUserCodeClassLoaders.ResolveOrder.CHILD_FIRST,
+							new String[0]),
 						new FileCache(tmInfo.getTmpDirectories()),
 						tmInfo,
 						new UnregisteredTaskMetricsGroup(),
@@ -235,7 +242,7 @@ public class JvmExitOnFatalErrorTest {
 		private static final class NoOpCheckpointResponder implements CheckpointResponder {
 
 			@Override
-			public void acknowledgeCheckpoint(JobID j, ExecutionAttemptID e, long i, CheckpointMetrics c, SubtaskState s) {}
+			public void acknowledgeCheckpoint(JobID j, ExecutionAttemptID e, long i, CheckpointMetrics c, TaskStateSnapshot s) {}
 
 			@Override
 			public void declineCheckpoint(JobID j, ExecutionAttemptID e, long l, Throwable t) {}
@@ -250,7 +257,7 @@ public class JvmExitOnFatalErrorTest {
 		private static final class NoOpPartitionProducerStateChecker implements PartitionProducerStateChecker {
 
 			@Override
-			public Future<ExecutionState> requestPartitionProducerState(
+			public CompletableFuture<ExecutionState> requestPartitionProducerState(
 					JobID jobId, IntermediateDataSetID intermediateDataSetId, ResultPartitionID r) {
 				return null;
 			}

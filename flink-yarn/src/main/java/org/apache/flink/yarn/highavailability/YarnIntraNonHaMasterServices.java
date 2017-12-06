@@ -71,6 +71,9 @@ public class YarnIntraNonHaMasterServices extends AbstractYarnNonHaServices {
 	/** The embedded leader election service used by JobManagers to find the resource manager. */
 	private final SingleLeaderElectionService resourceManagerLeaderElectionService;
 
+	/** The embedded leader election service for the dispatcher. */
+	private final SingleLeaderElectionService dispatcherLeaderElectionService;
+
 	// ------------------------------------------------------------------------
 
 	/**
@@ -100,6 +103,7 @@ public class YarnIntraNonHaMasterServices extends AbstractYarnNonHaServices {
 		try {
 			this.dispatcher = Executors.newSingleThreadExecutor(new ServicesThreadFactory());
 			this.resourceManagerLeaderElectionService = new SingleLeaderElectionService(dispatcher, DEFAULT_LEADER_ID);
+			this.dispatcherLeaderElectionService = new SingleLeaderElectionService(dispatcher, DEFAULT_LEADER_ID);
 
 			// all good!
 			successful = true;
@@ -130,12 +134,33 @@ public class YarnIntraNonHaMasterServices extends AbstractYarnNonHaServices {
 	}
 
 	@Override
+	public LeaderRetrievalService getDispatcherLeaderRetriever() {
+		enter();
+
+		try {
+			return dispatcherLeaderElectionService.createLeaderRetrievalService();
+		} finally {
+			exit();
+		}
+	}
+
+	@Override
 	public LeaderElectionService getResourceManagerLeaderElectionService() {
 		enter();
 		try {
 			return resourceManagerLeaderElectionService;
 		}
 		finally {
+			exit();
+		}
+	}
+
+	@Override
+	public LeaderElectionService getDispatcherLeaderElectionService() {
+		enter();
+		try {
+			return dispatcherLeaderElectionService;
+		} finally {
 			exit();
 		}
 	}
@@ -153,6 +178,17 @@ public class YarnIntraNonHaMasterServices extends AbstractYarnNonHaServices {
 
 	@Override
 	public LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID) {
+		enter();
+		try {
+			throw new UnsupportedOperationException("needs refactoring to accept default address");
+		}
+		finally {
+			exit();
+		}
+	}
+
+	@Override
+	public LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID, String defaultJobManagerAddress) {
 		enter();
 		try {
 			throw new UnsupportedOperationException("needs refactoring to accept default address");

@@ -32,41 +32,26 @@ public interface BlobStore extends BlobView {
 	 * Copies the local file to the blob store.
 	 *
 	 * @param localFile The file to copy
+	 * @param jobId ID of the job this blob belongs to (or <tt>null</tt> if job-unrelated)
 	 * @param blobKey   The ID for the file in the blob store
+	 *
+	 * @return whether the file was copied (<tt>true</tt>) or not (<tt>false</tt>)
 	 * @throws IOException If the copy fails
 	 */
-	void put(File localFile, BlobKey blobKey) throws IOException;
-
-	/**
-	 * Copies a local file to the blob store.
-	 *
-	 * <p>The job ID and key make up a composite key for the file.
-	 *
-	 * @param localFile The file to copy
-	 * @param jobId     The JobID part of ID for the file in the blob store
-	 * @param key       The String part of ID for the file in the blob store
-	 * @throws IOException If the copy fails
-	 */
-	void put(File localFile, JobID jobId, String key) throws IOException;
+	boolean put(File localFile, JobID jobId, BlobKey blobKey) throws IOException;
 
 	/**
 	 * Tries to delete a blob from storage.
 	 *
 	 * <p>NOTE: This also tries to delete any created directories if empty.</p>
 	 *
+	 * @param jobId ID of the job this blob belongs to (or <tt>null</tt> if job-unrelated)
 	 * @param blobKey The blob ID
-	 */
-	void delete(BlobKey blobKey);
-
-	/**
-	 * Tries to delete a blob from storage.
 	 *
-	 * <p>NOTE: This also tries to delete any created directories if empty.</p>
-	 *
-	 * @param jobId The JobID part of ID for the blob
-	 * @param key   The String part of ID for the blob
+	 * @return  <tt>true</tt> if the given blob is successfully deleted or non-existing;
+	 *          <tt>false</tt> otherwise
 	 */
-	void delete(JobID jobId, String key);
+	boolean delete(JobID jobId, BlobKey blobKey);
 
 	/**
 	 * Tries to delete all blobs for the given job from storage.
@@ -74,6 +59,9 @@ public interface BlobStore extends BlobView {
 	 * <p>NOTE: This also tries to delete any created directories if empty.</p>
 	 *
 	 * @param jobId The JobID part of all blobs to delete
+	 *
+	 * @return  <tt>true</tt> if the job directory is successfully deleted or non-existing;
+	 *          <tt>false</tt> otherwise
 	 */
-	void deleteAll(JobID jobId);
+	boolean deleteAll(JobID jobId);
 }

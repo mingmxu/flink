@@ -75,7 +75,7 @@ import java.util.Stack;
 import java.util.UUID;
 
 /**
- * A {@code KeyedStream} represents a {@link DataStream} on which operator state is
+ * A {@link KeyedStream} represents a {@link DataStream} on which operator state is
  * partitioned by key using a provided {@link KeySelector}. Typical operations supported by a
  * {@code DataStream} are also possible on a {@code KeyedStream}, with the exception of
  * partitioning methods such as shuffle, forward and keyBy.
@@ -267,13 +267,15 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 	public <R> SingleOutputStreamOperator<R> process(ProcessFunction<T, R> processFunction) {
 
 		TypeInformation<R> outType = TypeExtractor.getUnaryOperatorReturnType(
-				processFunction,
-				ProcessFunction.class,
-				false,
-				true,
-				getType(),
-				Utils.getCallLocationName(),
-				true);
+			processFunction,
+			ProcessFunction.class,
+			0,
+			1,
+			TypeExtractor.NO_INDEX,
+			TypeExtractor.NO_INDEX,
+			getType(),
+			Utils.getCallLocationName(),
+			true);
 
 		return process(processFunction, outType);
 	}
@@ -743,7 +745,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 
 		return new QueryableStateStream<>(
 				queryableStateName,
-				stateDescriptor.getSerializer(),
+				stateDescriptor,
 				getKeyType().createSerializer(getExecutionConfig()));
 	}
 
@@ -770,7 +772,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 
 		return new QueryableStateStream<>(
 				queryableStateName,
-				stateDescriptor.getSerializer(),
+				stateDescriptor,
 				getKeyType().createSerializer(getExecutionConfig()));
 	}
 
@@ -794,7 +796,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 
 		return new QueryableStateStream<>(
 				queryableStateName,
-				stateDescriptor.getSerializer(),
+				stateDescriptor,
 				getKeyType().createSerializer(getExecutionConfig()));
 	}
 

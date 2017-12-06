@@ -19,47 +19,24 @@
 package org.apache.flink.table.plan.schema
 
 import org.apache.calcite.rel.`type`.{RelDataType, RelDataTypeFactory}
-import org.apache.flink.table.api.{TableEnvironment, TableException}
 import org.apache.flink.table.calcite.FlinkTypeFactory
 import org.apache.flink.table.plan.stats.FlinkStatistic
-import org.apache.flink.table.sources.{DefinedProctimeAttribute, DefinedRowtimeAttribute, TableSource}
+import org.apache.flink.table.sources.{StreamTableSource, TableSourceUtil}
 
 class StreamTableSourceTable[T](
-    override val tableSource: TableSource[T],
-    override val statistic: FlinkStatistic = FlinkStatistic.UNKNOWN)
-  extends TableSourceTable[T](tableSource, statistic) {
+    tableSource: StreamTableSource[T],
+    statistic: FlinkStatistic = FlinkStatistic.UNKNOWN)
+  extends TableSourceTable[T](
+    tableSource,
+    statistic) {
 
+  TableSourceUtil.validateTableSource(tableSource)
 
   override def getRowType(typeFactory: RelDataTypeFactory): RelDataType = {
-    val flinkTypeFactory = typeFactory.asInstanceOf[FlinkTypeFactory]
-
-    val fieldNames = TableEnvironment.getFieldNames(tableSource).toList
-    val fieldTypes = TableEnvironment.getFieldTypes(tableSource.getReturnType).toList
-
-    val fieldCnt = fieldNames.length
-
-    val rowtime = tableSource match {
-      case timeSource: DefinedRowtimeAttribute if timeSource.getRowtimeAttribute != null =>
-        val rowtimeAttribute = timeSource.getRowtimeAttribute
-        Some((fieldCnt, rowtimeAttribute))
-      case _ =>
-        None
-    }
-
-    val proctime = tableSource match {
-      case timeSource: DefinedProctimeAttribute if timeSource.getProctimeAttribute != null =>
-        val proctimeAttribute = timeSource.getProctimeAttribute
-        Some((fieldCnt + (if (rowtime.isDefined) 1 else 0), proctimeAttribute))
-      case _ =>
-        None
-    }
-
-    flinkTypeFactory.buildLogicalRowType(
-      fieldNames,
-      fieldTypes,
-      rowtime,
-      proctime)
-
+    TableSourceUtil.getRelDataType(
+      tableSource,
+      None,
+      streaming = true,
+      typeFactory.asInstanceOf[FlinkTypeFactory])
   }
-
 }

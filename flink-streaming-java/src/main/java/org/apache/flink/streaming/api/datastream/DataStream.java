@@ -31,6 +31,7 @@ import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.io.OutputFormat;
 import org.apache.flink.api.common.operators.Keys;
 import org.apache.flink.api.common.operators.ResourceSpec;
+import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -91,7 +92,6 @@ import org.apache.flink.streaming.runtime.partitioner.RescalePartitioner;
 import org.apache.flink.streaming.runtime.partitioner.ShufflePartitioner;
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
 import org.apache.flink.streaming.util.keys.KeySelectorUtil;
-import org.apache.flink.streaming.util.serialization.SerializationSchema;
 import org.apache.flink.util.Preconditions;
 
 import java.util.ArrayList;
@@ -574,13 +574,15 @@ public class DataStream<T> {
 	public <R> SingleOutputStreamOperator<R> process(ProcessFunction<T, R> processFunction) {
 
 		TypeInformation<R> outType = TypeExtractor.getUnaryOperatorReturnType(
-				processFunction,
-				ProcessFunction.class,
-				false,
-				true,
-				getType(),
-				Utils.getCallLocationName(),
-				true);
+			processFunction,
+			ProcessFunction.class,
+			0,
+			1,
+			TypeExtractor.NO_INDEX,
+			TypeExtractor.NO_INDEX,
+			getType(),
+			Utils.getCallLocationName(),
+			true);
 
 		return process(processFunction, outType);
 	}

@@ -18,17 +18,23 @@
 
 package org.apache.flink.streaming.connectors.kafka;
 
-import org.junit.Test;
-
 /**
  * IT cases for the {@link FlinkKafkaProducer09}.
  */
 @SuppressWarnings("serial")
 public class Kafka09ProducerITCase extends KafkaProducerTestBase {
-
-	@Test
-	public void testCustomPartitioning() {
-		runCustomPartitioningTest();
+	@Override
+	public void testExactlyOnceRegularSink() throws Exception {
+		// Kafka08 does not support exactly once semantic
 	}
 
+	@Override
+	public void testExactlyOnceCustomOperator() throws Exception {
+		// Kafka08 does not support exactly once semantic
+	}
+
+	@Override
+	public void testOneToOneAtLeastOnceCustomOperator() throws Exception {
+		// Disable this test since FlinkKafka09Producer doesn't support custom operator mode
+	}
 }

@@ -45,14 +45,22 @@ public class TestingManualHighAvailabilityServices implements HighAvailabilitySe
 
 	private final ManualLeaderService resourceManagerLeaderService;
 
+	private final ManualLeaderService dispatcherLeaderService;
+
 	public TestingManualHighAvailabilityServices() {
 		jobManagerLeaderServices = new HashMap<>(4);
 		resourceManagerLeaderService = new ManualLeaderService();
+		dispatcherLeaderService = new ManualLeaderService();
 	}
 
 	@Override
 	public LeaderRetrievalService getResourceManagerLeaderRetriever() {
 		return resourceManagerLeaderService.createLeaderRetrievalService();
+	}
+
+	@Override
+	public LeaderRetrievalService getDispatcherLeaderRetriever() {
+		return dispatcherLeaderService.createLeaderRetrievalService();
 	}
 
 	@Override
@@ -63,8 +71,18 @@ public class TestingManualHighAvailabilityServices implements HighAvailabilitySe
 	}
 
 	@Override
+	public LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID, String defaultJobManagerAddress) {
+		return getJobManagerLeaderRetriever(jobID);
+	}
+
+	@Override
 	public LeaderElectionService getResourceManagerLeaderElectionService() {
 		return resourceManagerLeaderService.createLeaderElectionService();
+	}
+
+	@Override
+	public LeaderElectionService getDispatcherLeaderElectionService() {
+		return dispatcherLeaderService.createLeaderElectionService();
 	}
 
 	@Override

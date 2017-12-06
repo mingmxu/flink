@@ -23,8 +23,8 @@ under the License.
 
 	<parent>
 		<groupId>org.apache.flink</groupId>
-		<artifactId>flink-examples_${scala.binary.version}</artifactId>
-		<version>1.4-SNAPSHOT</version>
+		<artifactId>flink-examples</artifactId>
+		<version>1.5-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 

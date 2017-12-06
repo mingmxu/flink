@@ -98,15 +98,20 @@ public abstract class AbstractKeyedStateBackend<K>
 
 	private final ExecutionConfig executionConfig;
 
-	public AbstractKeyedStateBackend(
-			TaskKvStateRegistry kvStateRegistry,
-			TypeSerializer<K> keySerializer,
-			ClassLoader userCodeClassLoader,
-			int numberOfKeyGroups,
-			KeyGroupRange keyGroupRange,
-			ExecutionConfig executionConfig) {
+	/**
+	 * Decoratores the input and output streams to write key-groups compressed.
+	 */
+	protected final StreamCompressionDecorator keyGroupCompressionDecorator;
 
-		this.kvStateRegistry = kvStateRegistry;//Preconditions.checkNotNull(kvStateRegistry);
+	public AbstractKeyedStateBackend(
+		TaskKvStateRegistry kvStateRegistry,
+		TypeSerializer<K> keySerializer,
+		ClassLoader userCodeClassLoader,
+		int numberOfKeyGroups,
+		KeyGroupRange keyGroupRange,
+		ExecutionConfig executionConfig) {
+
+		this.kvStateRegistry = kvStateRegistry; //Preconditions.checkNotNull(kvStateRegistry);
 		this.keySerializer = Preconditions.checkNotNull(keySerializer);
 		this.numberOfKeyGroups = Preconditions.checkNotNull(numberOfKeyGroups);
 		this.userCodeClassLoader = Preconditions.checkNotNull(userCodeClassLoader);
@@ -114,6 +119,15 @@ public abstract class AbstractKeyedStateBackend<K>
 		this.cancelStreamRegistry = new CloseableRegistry();
 		this.keyValueStatesByName = new HashMap<>();
 		this.executionConfig = executionConfig;
+		this.keyGroupCompressionDecorator = determineStreamCompression(executionConfig);
+	}
+
+	private StreamCompressionDecorator determineStreamCompression(ExecutionConfig executionConfig) {
+		if (executionConfig != null && executionConfig.isUseSnapshotCompression()) {
+			return SnappyStreamCompressionDecorator.INSTANCE;
+		} else {
+			return UncompressedStreamCompressionDecorator.INSTANCE;
+		}
 	}
 
 	/**
@@ -321,7 +335,7 @@ public abstract class AbstractKeyedStateBackend<K>
 			public <T, ACC> FoldingState<T, ACC> createFoldingState(FoldingStateDescriptor<T, ACC> stateDesc) throws Exception {
 				return AbstractKeyedStateBackend.this.createFoldingState(namespaceSerializer, stateDesc);
 			}
-			
+
 			@Override
 			public <UK, UV> MapState<UK, UV> createMapState(MapStateDescriptor<UK, UV> stateDesc) throws Exception {
 				return AbstractKeyedStateBackend.this.createMapState(namespaceSerializer, stateDesc);
@@ -394,4 +408,16 @@ public abstract class AbstractKeyedStateBackend<K>
 	public boolean supportsAsynchronousSnapshots() {
 		return false;
 	}
+
+	@VisibleForTesting
+	public StreamCompressionDecorator getKeyGroupCompressionDecorator() {
+		return keyGroupCompressionDecorator;
+	}
+
+	/**
+	 * Returns the total number of state entries across all keys/namespaces.
+	 */
+	@VisibleForTesting
+	public abstract int numStateEntries();
+
 }

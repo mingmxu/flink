@@ -53,7 +53,7 @@ public class WordCountSQL {
 		tEnv.registerDataSet("WordCount", input, "word, frequency");
 
 		// run a SQL query on the Table and retrieve the result as a new Table
-		Table table = tEnv.sql(
+		Table table = tEnv.sqlQuery(
 			"SELECT word, SUM(frequency) as frequency FROM WordCount GROUP BY word");
 
 		DataSet<WC> result = tEnv.toDataSet(table, WC.class);
@@ -65,7 +65,10 @@ public class WordCountSQL {
 	//     USER DATA TYPES
 	// *************************************************************************
 
-	private static class WC {
+	/**
+	 * Simple POJO containing a word and its respective count.
+	 */
+	public static class WC {
 		public String word;
 		public long frequency;
 

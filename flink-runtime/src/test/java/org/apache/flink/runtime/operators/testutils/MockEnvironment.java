@@ -27,7 +27,7 @@ import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.accumulators.AccumulatorRegistry;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
-import org.apache.flink.runtime.checkpoint.SubtaskState;
+import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
@@ -50,6 +50,7 @@ import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
 import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 import org.apache.flink.types.Record;
 import org.apache.flink.util.MutableObjectIterator;
+import org.apache.flink.util.Preconditions;
 
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -97,12 +98,23 @@ public class MockEnvironment implements Environment {
 
 	private final int bufferSize;
 
+	private final ClassLoader userCodeClassLoader;
+
 	public MockEnvironment(String taskName, long memorySize, MockInputSplitProvider inputSplitProvider, int bufferSize) {
 		this(taskName, memorySize, inputSplitProvider, bufferSize, new Configuration(), new ExecutionConfig());
 	}
 
 	public MockEnvironment(String taskName, long memorySize, MockInputSplitProvider inputSplitProvider, int bufferSize, Configuration taskConfiguration, ExecutionConfig executionConfig) {
-		this(taskName, memorySize, inputSplitProvider, bufferSize, taskConfiguration, executionConfig, 1, 1, 0);
+		this(
+			taskName,
+			memorySize,
+			inputSplitProvider,
+			bufferSize,
+			taskConfiguration,
+			executionConfig,
+			1,
+			1,
+			0);
 	}
 
 	public MockEnvironment(
@@ -115,6 +127,31 @@ public class MockEnvironment implements Environment {
 			int maxParallelism,
 			int parallelism,
 			int subtaskIndex) {
+		this(
+			taskName,
+			memorySize,
+			inputSplitProvider,
+			bufferSize,
+			taskConfiguration,
+			executionConfig,
+			maxParallelism,
+			parallelism,
+			subtaskIndex,
+			Thread.currentThread().getContextClassLoader());
+
+	}
+
+	public MockEnvironment(
+			String taskName,
+			long memorySize,
+			MockInputSplitProvider inputSplitProvider,
+			int bufferSize,
+			Configuration taskConfiguration,
+			ExecutionConfig executionConfig,
+			int maxParallelism,
+			int parallelism,
+			int subtaskIndex,
+			ClassLoader userCodeClassLoader) {
 		this.taskInfo = new TaskInfo(taskName, maxParallelism, subtaskIndex, parallelism, 0);
 		this.jobConfiguration = new Configuration();
 		this.taskConfiguration = taskConfiguration;
@@ -131,6 +168,8 @@ public class MockEnvironment implements Environment {
 
 		KvStateRegistry registry = new KvStateRegistry();
 		this.kvStateRegistry = registry.createTaskRegistry(jobID, getJobVertexId());
+
+		this.userCodeClassLoader = Preconditions.checkNotNull(userCodeClassLoader);
 	}
 
 
@@ -254,7 +293,7 @@ public class MockEnvironment implements Environment {
 
 	@Override
 	public ClassLoader getUserClassLoader() {
-		return getClass().getClassLoader();
+		return userCodeClassLoader;
 	}
 
 	@Override
@@ -315,7 +354,7 @@ public class MockEnvironment implements Environment {
 	}
 
 	@Override
-	public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics, SubtaskState subtaskState) {
+	public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics, TaskStateSnapshot subtaskState) {
 		throw new UnsupportedOperationException();
 	}
 

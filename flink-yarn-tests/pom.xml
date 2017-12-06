@@ -23,7 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.4-SNAPSHOT</version>
+		<version>1.5-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
@@ -40,6 +40,12 @@ under the License.
 	<dependencies>
 		
 		<!-- test dependencies -->
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-jackson</artifactId>
+			<scope>test</scope>
+		</dependency>
 		
 		<dependency>
 			<groupId>org.apache.flink</groupId>
@@ -81,6 +87,24 @@ under the License.
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-examples-batch_${scala.binary.version}</artifactId>
+			<version>${project.version}</version>
+			<type>jar</type>
+			<classifier>WordCount</classifier>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-examples-streaming_${scala.binary.version}</artifactId>
+			<version>${project.version}</version>
+			<type>jar</type>
+			<classifier>WordCount</classifier>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-shaded-hadoop2</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
@@ -99,8 +123,8 @@ under the License.
 		</dependency>
 		
 		<dependency>
-			<groupId>com.data-artisans</groupId>
-			<artifactId>flakka-testkit_${scala.binary.version}</artifactId>
+			<groupId>com.typesafe.akka</groupId>
+			<artifactId>akka-testkit_${scala.binary.version}</artifactId>
 			<scope>test</scope>
 		</dependency>
 
@@ -114,6 +138,22 @@ under the License.
 
 	<build>
 		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-enforcer-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>dependency-convergence</id>
+						<goals>
+							<goal>enforce</goal>
+						</goals>
+						<configuration>
+							<skip>true</skip>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
 			<!-- Set the root directory for all tests to the project root.
 			We need this to be able to locate the final build (in flink-dist)
 			-->
@@ -297,59 +337,47 @@ under the License.
 					</execution>
 				</executions>
 			</plugin>
-			<plugin>
-				<groupId>com.github.siom79.japicmp</groupId>
-				<artifactId>japicmp-maven-plugin</artifactId>
-				<configuration>
-					<skip>true</skip>
-				</configuration>
-			</plugin>
 
 			<!--
-            https://issues.apache.org/jira/browse/DIRSHARED-134
-            Required to pull the Mini-KDC transitive dependency
-            -->
-			<plugin>
-				<groupId>org.apache.felix</groupId>
-				<artifactId>maven-bundle-plugin</artifactId>
-				<version>3.0.1</version>
-				<inherited>true</inherited>
-				<extensions>true</extensions>
-			</plugin>
-
+			Copy batch and streaming examples programs in to the flink-yarn-tests/target/programs
+			directory to be run during YARN integration tests.
+			-->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-checkstyle-plugin</artifactId>
-				<version>2.17</version>
-				<dependencies>
-					<dependency>
-						<groupId>com.puppycrawl.tools</groupId>
-						<artifactId>checkstyle</artifactId>
-						<version>6.19</version>
-					</dependency>
-				</dependencies>
-				<configuration>
-					<configLocation>/tools/maven/strict-checkstyle.xml</configLocation>
-					<suppressionsLocation>/tools/maven/suppressions.xml</suppressionsLocation>
-					<includeTestSourceDirectory>true</includeTestSourceDirectory>
-					<logViolationsToConsole>true</logViolationsToConsole>
-					<failOnViolation>true</failOnViolation>
-				</configuration>
+				<artifactId>maven-dependency-plugin</artifactId>
+				<version>3.0.1</version>
 				<executions>
-					<!--
-					Execute checkstyle after compilation but before tests.
-
-					This ensures that any parsing or type checking errors are from
-					javac, so they look as expected. Beyond that, we want to
-					fail as early as possible.
-					-->
 					<execution>
-						<phase>test-compile</phase>
+						<id>copy</id>
+						<phase>process-test-resources</phase>
 						<goals>
-							<goal>check</goal>
+							<goal>copy</goal>
 						</goals>
 					</execution>
 				</executions>
+				<configuration>
+					<artifactItems>
+						<artifactItem>
+							<groupId>org.apache.flink</groupId>
+							<artifactId>flink-examples-batch_${scala.binary.version}</artifactId>
+							<type>jar</type>
+							<classifier>WordCount</classifier>
+							<overWrite>true</overWrite>
+							<destFileName>BatchWordCount.jar</destFileName>
+						</artifactItem>
+						<artifactItem>
+							<groupId>org.apache.flink</groupId>
+							<artifactId>flink-examples-streaming_${scala.binary.version}</artifactId>
+							<type>jar</type>
+							<classifier>WordCount</classifier>
+							<overWrite>true</overWrite>
+							<destFileName>StreamingWordCount.jar</destFileName>
+						</artifactItem>
+					</artifactItems>
+					<outputDirectory>${project.build.directory}/programs</outputDirectory>
+					<overWriteReleases>false</overWriteReleases>
+					<overWriteSnapshots>true</overWriteSnapshots>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>

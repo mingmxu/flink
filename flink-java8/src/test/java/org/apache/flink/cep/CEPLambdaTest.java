@@ -27,7 +27,6 @@ import org.apache.flink.streaming.api.transformations.SourceTransformation;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.TestLogger;
 
-import org.junit.Ignore;
 import org.junit.Test;
 
 import java.util.List;
@@ -53,7 +52,6 @@ public class CEPLambdaTest extends TestLogger {
 	 * Tests that a Java8 lambda can be passed as a CEP select function.
 	 */
 	@Test
-	@Ignore
 	public void testLambdaSelectFunction() {
 		TypeInformation<EventA> eventTypeInformation = TypeExtractor.getForClass(EventA.class);
 		TypeInformation<EventB> outputTypeInformation = TypeExtractor.getForClass(EventB.class);
@@ -81,7 +79,6 @@ public class CEPLambdaTest extends TestLogger {
 	 * Tests that a Java8 lambda can be passed as a CEP flat select function.
 	 */
 	@Test
-	@Ignore
 	public void testLambdaFlatSelectFunction() {
 		TypeInformation<EventA> eventTypeInformation = TypeExtractor.getForClass(EventA.class);
 		TypeInformation<EventB> outputTypeInformation = TypeExtractor.getForClass(EventB.class);

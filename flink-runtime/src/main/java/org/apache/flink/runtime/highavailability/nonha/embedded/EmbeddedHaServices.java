@@ -45,11 +45,14 @@ public class EmbeddedHaServices extends AbstractNonHaServices {
 
 	private final EmbeddedLeaderService resourceManagerLeaderService;
 
+	private final EmbeddedLeaderService dispatcherLeaderService;
+
 	private final HashMap<JobID, EmbeddedLeaderService> jobManagerLeaderServices;
 
 	public EmbeddedHaServices(Executor executor) {
 		this.executor = Preconditions.checkNotNull(executor);
 		this.resourceManagerLeaderService = new EmbeddedLeaderService(executor);
+		this.dispatcherLeaderService = new EmbeddedLeaderService(executor);
 		this.jobManagerLeaderServices = new HashMap<>();
 	}
 
@@ -63,8 +66,18 @@ public class EmbeddedHaServices extends AbstractNonHaServices {
 	}
 
 	@Override
+	public LeaderRetrievalService getDispatcherLeaderRetriever() {
+		return dispatcherLeaderService.createLeaderRetrievalService();
+	}
+
+	@Override
 	public LeaderElectionService getResourceManagerLeaderElectionService() {
 		return resourceManagerLeaderService.createLeaderElectionService();
+	}
+
+	@Override
+	public LeaderElectionService getDispatcherLeaderElectionService() {
+		return dispatcherLeaderService.createLeaderElectionService();
 	}
 
 	@Override
@@ -76,6 +89,11 @@ public class EmbeddedHaServices extends AbstractNonHaServices {
 			EmbeddedLeaderService service = getOrCreateJobManagerService(jobID);
 			return service.createLeaderRetrievalService();
 		}
+	}
+
+	@Override
+	public LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID, String defaultJobManagerAddress) {
+		return getJobManagerLeaderRetriever(jobID);
 	}
 
 	@Override

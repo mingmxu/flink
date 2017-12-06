@@ -17,10 +17,13 @@
 
 package org.apache.flink.streaming.connectors.kafka;
 
+import org.apache.flink.networking.NetworkFailuresProxy;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.operators.StreamSink;
+import org.apache.flink.streaming.connectors.kafka.internals.Kafka08PartitionDiscoverer;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicPartitionLeader;
+import org.apache.flink.streaming.connectors.kafka.internals.KafkaTopicsDescriptor;
 import org.apache.flink.streaming.connectors.kafka.internals.ZookeeperOffsetHandler;
 import org.apache.flink.streaming.connectors.kafka.partitioner.FlinkKafkaPartitioner;
 import org.apache.flink.streaming.connectors.kafka.testutils.ZooKeeperStringSerializer;
@@ -36,12 +39,17 @@ import kafka.server.KafkaConfig;
 import kafka.server.KafkaServer;
 import kafka.utils.SystemTime$;
 import org.I0Itec.zkclient.ZkClient;
+import org.apache.commons.collections.list.UnmodifiableList;
 import org.apache.commons.io.FileUtils;
 import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.curator.test.TestingServer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,8 +58,10 @@ import java.io.IOException;
 import java.net.BindException;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 
@@ -75,7 +85,7 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 	private String zookeeperConnectionString;
 	private String brokerConnectionString = "";
 	private Properties standardProps;
-	private Properties additionalServerProperties;
+	private Config config;
 
 	public String getBrokerConnectionString() {
 		return brokerConnectionString;
@@ -107,6 +117,29 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 	}
 
 	@Override
+	public <K, V> Collection<ConsumerRecord<K, V>> getAllRecordsFromTopic(Properties properties, String topic, int partition, long timeout) {
+		List<ConsumerRecord<K, V>> result = new ArrayList<>();
+		try (KafkaConsumer<K, V> consumer = new KafkaConsumer<>(properties)) {
+			consumer.subscribe(new TopicPartition(topic, partition));
+
+			while (true) {
+				Map<String, ConsumerRecords<K, V>> topics = consumer.poll(timeout);
+				if (topics == null || !topics.containsKey(topic)) {
+					break;
+				}
+				List<ConsumerRecord<K, V>> records = topics.get(topic).records(partition);
+				result.addAll(records);
+				if (records.size() == 0) {
+					break;
+				}
+			}
+			consumer.commit(true);
+		}
+
+		return UnmodifiableList.decorate(result);
+	}
+
+	@Override
 	public <T> StreamSink<T> getProducerSink(
 			String topic,
 			KeyedSerializationSchema<T> serSchema,
@@ -126,6 +159,11 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 		FlinkKafkaProducer08<T> prod = new FlinkKafkaProducer08<>(topic, serSchema, props, partitioner);
 		prod.setFlushOnCheckpoint(true);
 		return stream.addSink(prod);
+	}
+
+	@Override
+	public <T> DataStreamSink<T> writeToKafkaWithTimestamps(DataStream<T> stream, String topic, KeyedSerializationSchema<T> serSchema, Properties props) {
+		throw new UnsupportedOperationException();
 	}
 
 	@Override
@@ -169,8 +207,8 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 	}
 
 	@Override
-	public void prepare(int numKafkaServers, Properties additionalServerProperties, boolean secureMode) {
-		this.additionalServerProperties = additionalServerProperties;
+	public void prepare(Config config) {
+		this.config = config;
 		File tempDir = new File(System.getProperty("java.io.tmpdir"));
 
 		tmpZkDir = new File(tempDir, "kafkaITcase-zk-dir-" + (UUID.randomUUID().toString()));
@@ -187,8 +225,8 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 			fail("cannot create kafka temp dir: " + e.getMessage());
 		}
 
-		tmpKafkaDirs = new ArrayList<>(numKafkaServers);
-		for (int i = 0; i < numKafkaServers; i++) {
+		tmpKafkaDirs = new ArrayList<>(config.getKafkaServersNumber());
+		for (int i = 0; i < config.getKafkaServersNumber(); i++) {
 			File tmpDir = new File(tmpKafkaParent, "server-" + i);
 			assertTrue("cannot create kafka temp dir", tmpDir.mkdir());
 			tmpKafkaDirs.add(tmpDir);
@@ -203,9 +241,9 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 			zookeeperConnectionString = zookeeper.getConnectString();
 
 			LOG.info("Starting KafkaServer");
-			brokers = new ArrayList<>(numKafkaServers);
+			brokers = new ArrayList<>(config.getKafkaServersNumber());
 
-			for (int i = 0; i < numKafkaServers; i++) {
+			for (int i = 0; i < config.getKafkaServersNumber(); i++) {
 				brokers.add(getKafkaServer(i, tmpKafkaDirs.get(i)));
 				SocketServer socketServer = brokers.get(i).socketServer();
 
@@ -232,7 +270,7 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 	}
 
 	@Override
-	public void shutdown() {
+	public void shutdown() throws Exception {
 		if (brokers != null) {
 			for (KafkaServer broker : brokers) {
 				if (broker != null) {
@@ -271,6 +309,7 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 				// ignore
 			}
 		}
+		super.shutdown();
 	}
 
 	@Override
@@ -283,6 +322,17 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 		AdminUtils.createTopic(creator, topic, numberOfPartitions, replicationFactor, topicConfig);
 		creator.close();
 
+		List<String> topicList = Collections.singletonList(topic);
+
+		// create a partition discoverer, to make sure that partitions for the test topic are created
+		Kafka08PartitionDiscoverer partitionDiscoverer =
+			new Kafka08PartitionDiscoverer(new KafkaTopicsDescriptor(topicList, null), 0, 1, standardProps);
+		try {
+			partitionDiscoverer.open();
+		} catch (Exception e) {
+			throw new RuntimeException("Exception while opening partition discoverer.", e);
+		}
+
 		// validate that the topic has been created
 		final long deadline = System.nanoTime() + 30_000_000_000L;
 		do {
@@ -292,7 +342,7 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 			catch (InterruptedException e) {
 				// restore interrupted state
 			}
-			List<KafkaTopicPartitionLeader> partitions = FlinkKafkaConsumer08.getPartitionsForTopic(Collections.singletonList(topic), standardProps);
+			List<KafkaTopicPartitionLeader> partitions = partitionDiscoverer.getPartitionLeadersForTopics(Collections.singletonList(topic));
 			if (partitions != null && partitions.size() > 0) {
 				return;
 			}
@@ -343,8 +393,8 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 		// for CI stability, increase zookeeper session timeout
 		kafkaProperties.put("zookeeper.session.timeout.ms", "30000");
 		kafkaProperties.put("zookeeper.connection.timeout.ms", "30000");
-		if (additionalServerProperties != null) {
-			kafkaProperties.putAll(additionalServerProperties);
+		if (config.getKafkaServerProperties() != null) {
+			kafkaProperties.putAll(config.getKafkaServerProperties());
 		}
 
 		final int numTries = 5;
@@ -352,6 +402,12 @@ public class KafkaTestEnvironmentImpl extends KafkaTestEnvironment {
 		for (int i = 1; i <= numTries; i++) {
 			int kafkaPort = NetUtils.getAvailablePort();
 			kafkaProperties.put("port", Integer.toString(kafkaPort));
+
+			if (config.isHideKafkaBehindProxy()) {
+				NetworkFailuresProxy proxy = createProxy(KAFKA_HOST, kafkaPort);
+				kafkaProperties.put("advertised.port", Integer.toString(proxy.getLocalPort()));
+			}
+
 			KafkaConfig kafkaConfig = new KafkaConfig(kafkaProperties);
 
 			try {

@@ -22,16 +22,17 @@ import org.apache.flink.runtime.registration.RetryingRegistrationTest.TestRegist
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.TestingRpcService;
 import org.apache.flink.util.TestLogger;
+
 import org.junit.Test;
 import org.slf4j.LoggerFactory;
 
 import java.util.UUID;
 import java.util.concurrent.Executor;
 
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -117,7 +118,7 @@ public class RegisteredRpcConnectionTest extends TestLogger {
 		TestRegistrationGateway testGateway = new TestRegistrationGateway(new RetryingRegistrationTest.TestRegistrationSuccess(connectionID));
 		TestingRpcService rpcService = new TestingRpcService();
 
-		try{
+		try {
 			rpcService.registerGateway(testRpcConnectionEndpointAddress, testGateway);
 
 			TestRpcConnection connection = new TestRpcConnection(testRpcConnectionEndpointAddress, leaderId, rpcService.getExecutor(), rpcService);
@@ -140,7 +141,7 @@ public class RegisteredRpcConnectionTest extends TestLogger {
 	//  test RegisteredRpcConnection
 	// ------------------------------------------------------------------------
 
-	private static class TestRpcConnection extends RegisteredRpcConnection<TestRegistrationGateway, TestRegistrationSuccess> {
+	private static class TestRpcConnection extends RegisteredRpcConnection<UUID, TestRegistrationGateway, TestRegistrationSuccess> {
 
 		private final RpcService rpcService;
 
@@ -148,17 +149,13 @@ public class RegisteredRpcConnectionTest extends TestLogger {
 
 		private String failureMessage;
 
-		public TestRpcConnection(String targetAddress,
-								 UUID targetLeaderId,
-								 Executor executor,
-								 RpcService rpcService)
-		{
+		public TestRpcConnection(String targetAddress, UUID targetLeaderId, Executor executor,  RpcService rpcService) {
 			super(LoggerFactory.getLogger(RegisteredRpcConnectionTest.class), targetAddress, targetLeaderId, executor);
 			this.rpcService = rpcService;
 		}
 
 		@Override
-		protected RetryingRegistration<TestRegistrationGateway, RetryingRegistrationTest.TestRegistrationSuccess> generateRegistration() {
+		protected RetryingRegistration<UUID, TestRegistrationGateway, RetryingRegistrationTest.TestRegistrationSuccess> generateRegistration() {
 			return new RetryingRegistrationTest.TestRetryingRegistration(rpcService, getTargetAddress(), getTargetLeaderId());
 		}
 

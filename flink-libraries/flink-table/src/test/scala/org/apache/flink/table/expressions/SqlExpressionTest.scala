@@ -114,6 +114,7 @@ class SqlExpressionTest extends ExpressionTestBase {
     testSqlApi("SIGN(-1.1)", "-1")
     testSqlApi("ROUND(-12.345, 2)", "-12.35")
     testSqlApi("PI", "3.141592653589793")
+    testSqlApi("E()", "2.718281828459045")
   }
 
   @Test
@@ -150,11 +151,13 @@ class SqlExpressionTest extends ExpressionTestBase {
 
   @Test
   def testValueConstructorFunctions(): Unit = {
-    // TODO we need a special code path that flattens ROW types
-    // testSqlApi("ROW('hello world', 12)", "hello world") // test base only returns field 0
-    // testSqlApi("('hello world', 12)", "hello world") // test base only returns field 0
+    testSqlApi("ROW('hello world', 12)", "hello world,12")
+    testSqlApi("('hello world', 12)", "hello world,12")
+    testSqlApi("('foo', ('bar', 12))", "foo,bar,12")
     testSqlApi("ARRAY[TRUE, FALSE][2]", "false")
     testSqlApi("ARRAY[TRUE, TRUE]", "[true, true]")
+    testSqlApi("MAP['k1', 'v1', 'k2', 'v2']['k2']", "v2")
+    testSqlApi("MAP['k1', CAST(true AS VARCHAR(256)), 'k2', 'foo']['k1']", "true")
   }
 
   @Test

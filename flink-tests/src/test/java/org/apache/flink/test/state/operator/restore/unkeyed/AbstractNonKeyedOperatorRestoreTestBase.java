@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.test.state.operator.restore.unkeyed;
 
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -23,6 +24,12 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.state.operator.restore.AbstractOperatorRestoreTestBase;
 import org.apache.flink.test.state.operator.restore.ExecutionMode;
 
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+
+import java.util.Arrays;
+import java.util.Collection;
+
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createFirstStatefulMap;
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createSecondStatefulMap;
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createSource;
@@ -30,9 +37,28 @@ import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.c
 import static org.apache.flink.test.state.operator.restore.unkeyed.NonKeyedJob.createThirdStatefulMap;
 
 /**
- * All classes extending this class will use the same savepoint and migration job.
+ * Base class for all non-keyed operator restore tests.
  */
+@RunWith(Parameterized.class)
 public abstract class AbstractNonKeyedOperatorRestoreTestBase extends AbstractOperatorRestoreTestBase {
+
+	private final String savepointPath;
+
+	@Parameterized.Parameters(name = "Migrate Savepoint: {0}")
+	public static Collection<String> parameters () {
+		return Arrays.asList(
+			"nonKeyed-flink1.2",
+			"nonKeyed-flink1.3");
+	}
+
+	protected AbstractNonKeyedOperatorRestoreTestBase(String savepointPath) {
+		this.savepointPath = savepointPath;
+	}
+
+	protected AbstractNonKeyedOperatorRestoreTestBase(String savepointPath, boolean allowNonRestoredState) {
+		super(allowNonRestoredState);
+		this.savepointPath = savepointPath;
+	}
 
 	@Override
 	public void createMigrationJob(StreamExecutionEnvironment env) {
@@ -53,7 +79,7 @@ public abstract class AbstractNonKeyedOperatorRestoreTestBase extends AbstractOp
 	}
 
 	@Override
-	protected final String getMigrationSavepointName() {
-		return "nonKeyed";
+	protected String getMigrationSavepointName() {
+		return savepointPath;
 	}
 }

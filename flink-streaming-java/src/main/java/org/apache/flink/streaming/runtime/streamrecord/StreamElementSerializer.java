@@ -285,26 +285,31 @@ public final class StreamElementSerializer<T> extends TypeSerializer<StreamEleme
 
 	@Override
 	public CompatibilityResult<StreamElement> ensureCompatibility(TypeSerializerConfigSnapshot configSnapshot) {
+		Tuple2<TypeSerializer<?>, TypeSerializerConfigSnapshot> previousTypeSerializerAndConfig;
+
+		// we are compatible for data written by ourselves or the legacy MultiplexingStreamRecordSerializer
 		if (configSnapshot instanceof StreamElementSerializerConfigSnapshot) {
-			Tuple2<TypeSerializer<?>, TypeSerializerConfigSnapshot> previousTypeSerializerAndConfig =
+			previousTypeSerializerAndConfig =
 				((StreamElementSerializerConfigSnapshot) configSnapshot).getSingleNestedSerializerAndConfig();
-
-			CompatibilityResult<T> compatResult = CompatibilityUtil.resolveCompatibilityResult(
-					previousTypeSerializerAndConfig.f0,
-					UnloadableDummyTypeSerializer.class,
-					previousTypeSerializerAndConfig.f1,
-					typeSerializer);
-
-			if (!compatResult.isRequiresMigration()) {
-				return CompatibilityResult.compatible();
-			} else if (compatResult.getConvertDeserializer() != null) {
-				return CompatibilityResult.requiresMigration(
-					new StreamElementSerializer<>(
-						new TypeDeserializerAdapter<>(compatResult.getConvertDeserializer())));
-			}
+		} else {
+			return CompatibilityResult.requiresMigration();
 		}
 
-		return CompatibilityResult.requiresMigration();
+		CompatibilityResult<T> compatResult = CompatibilityUtil.resolveCompatibilityResult(
+				previousTypeSerializerAndConfig.f0,
+				UnloadableDummyTypeSerializer.class,
+				previousTypeSerializerAndConfig.f1,
+				typeSerializer);
+
+		if (!compatResult.isRequiresMigration()) {
+			return CompatibilityResult.compatible();
+		} else if (compatResult.getConvertDeserializer() != null) {
+			return CompatibilityResult.requiresMigration(
+				new StreamElementSerializer<>(
+					new TypeDeserializerAdapter<>(compatResult.getConvertDeserializer())));
+		} else {
+			return CompatibilityResult.requiresMigration();
+		}
 	}
 
 	/**
