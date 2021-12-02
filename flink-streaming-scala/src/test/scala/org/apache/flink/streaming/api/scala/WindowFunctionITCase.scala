@@ -21,7 +21,6 @@ package org.apache.flink.streaming.api.scala
 import java.util.concurrent.TimeUnit
 
 import org.apache.flink.api.java.tuple.Tuple
-import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks
 import org.apache.flink.streaming.api.functions.sink.SinkFunction
 import org.apache.flink.streaming.api.functions.source.SourceFunction
@@ -32,7 +31,7 @@ import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow
 import org.apache.flink.util.TestLogger
 import org.junit.Assert._
-import org.junit.{Ignore, Test}
+import org.junit.Test
 
 import scala.collection.mutable
 
@@ -44,7 +43,6 @@ class WindowFunctionITCase extends TestLogger {
     CheckingIdentityRichWindowFunction.reset()
     
     val env = StreamExecutionEnvironment.getExecutionEnvironment
-    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
     env.setParallelism(1)
 
     val source1 = env.addSource(new SourceFunction[(String, Int)]() {
@@ -71,7 +69,7 @@ class WindowFunctionITCase extends TestLogger {
       .window(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
       .apply(new CheckingIdentityRichWindowFunction[(String, Int), Tuple, TimeWindow]())
       .addSink(new SinkFunction[(String, Int)]() {
-        def invoke(value: (String, Int)) {
+        override def invoke(value: (String, Int)) {
           WindowFunctionITCase.testResults += value.toString
         }
       })
@@ -93,7 +91,6 @@ class WindowFunctionITCase extends TestLogger {
     CheckingIdentityRichProcessWindowFunction.reset()
 
     val env = StreamExecutionEnvironment.getExecutionEnvironment
-    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
     env.setParallelism(1)
 
     val source1 = env.addSource(new SourceFunction[(String, Int)]() {
@@ -120,7 +117,7 @@ class WindowFunctionITCase extends TestLogger {
       .window(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
       .process(new CheckingIdentityRichProcessWindowFunction[(String, Int), Tuple, TimeWindow]())
       .addSink(new SinkFunction[(String, Int)]() {
-        def invoke(value: (String, Int)) {
+        override def invoke(value: (String, Int)) {
           WindowFunctionITCase.testResults += value.toString
         }
       })
@@ -142,7 +139,6 @@ class WindowFunctionITCase extends TestLogger {
     CheckingIdentityRichAllWindowFunction.reset()
 
     val env = StreamExecutionEnvironment.getExecutionEnvironment
-    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
     env.setParallelism(1)
 
     val source1 = env.addSource(new SourceFunction[(String, Int)]() {
@@ -168,7 +164,7 @@ class WindowFunctionITCase extends TestLogger {
       .windowAll(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
       .apply(new CheckingIdentityRichAllWindowFunction[(String, Int), TimeWindow]())
       .addSink(new SinkFunction[(String, Int)]() {
-        def invoke(value: (String, Int)) {
+        override def invoke(value: (String, Int)) {
           WindowFunctionITCase.testResults += value.toString
         }
       })
@@ -190,7 +186,6 @@ class WindowFunctionITCase extends TestLogger {
     CheckingIdentityRichProcessAllWindowFunction.reset()
 
     val env = StreamExecutionEnvironment.getExecutionEnvironment
-    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
     env.setParallelism(1)
 
     val source1 = env.addSource(new SourceFunction[(String, Int)]() {
@@ -216,7 +211,7 @@ class WindowFunctionITCase extends TestLogger {
       .windowAll(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
       .process(new CheckingIdentityRichProcessAllWindowFunction[(String, Int), TimeWindow]())
       .addSink(new SinkFunction[(String, Int)]() {
-        def invoke(value: (String, Int)) {
+        override def invoke(value: (String, Int)) {
           WindowFunctionITCase.testResults += value.toString
         }
       })

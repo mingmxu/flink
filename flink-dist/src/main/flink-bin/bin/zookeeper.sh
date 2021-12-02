@@ -33,8 +33,8 @@ bin=`cd "$bin"; pwd`
 
 . "$bin"/config.sh
 
-ZK_CONF=$FLINK_CONF_DIR/zoo.cfg
-if [ ! -f $ZK_CONF ]; then
+ZK_CONF="$FLINK_CONF_DIR/zoo.cfg"
+if [ ! -f "$ZK_CONF" ]; then
     echo "[ERROR] No ZooKeeper configuration file found in '$ZK_CONF'."
     exit 1
 fi
@@ -57,6 +57,9 @@ if [[ $STARTSTOP == "start" ]] || [[ $STARTSTOP == "start-foreground" ]]; then
     # Startup parameters
     args=("--zkConfigFile" "${ZK_CONF}" "--peerId" "${PEER_ID}")
 fi
+
+# the JMX log4j integration in ZK 3.4 does not work log4j 2
+export JVM_ARGS="$JVM_ARGS -Dzookeeper.jmx.log4j.disable=true"
 
 if [[ $STARTSTOP == "start-foreground" ]]; then
     "${FLINK_BIN_DIR}"/flink-console.sh zookeeper "${args[@]}"

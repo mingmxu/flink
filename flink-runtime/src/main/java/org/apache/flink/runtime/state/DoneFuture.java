@@ -17,11 +17,11 @@
  */
 package org.apache.flink.runtime.state;
 
-import java.util.concurrent.ExecutionException;
+import javax.annotation.Nullable;
+
 import java.util.concurrent.Future;
 import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * A {@link Future} that is always done and will just yield the object that was given at creation
@@ -31,48 +31,41 @@ import java.util.concurrent.TimeoutException;
  */
 public class DoneFuture<T> implements RunnableFuture<T> {
 
-	private static final DoneFuture<?> NULL_FUTURE = new DoneFuture<Object>(null);
+    @Nullable private final T payload;
 
-	private final T payload;
+    protected DoneFuture(@Nullable T payload) {
+        this.payload = payload;
+    }
 
-	public DoneFuture(T payload) {
-		this.payload = payload;
-	}
+    @Override
+    public boolean cancel(boolean mayInterruptIfRunning) {
+        return false;
+    }
 
-	@Override
-	public boolean cancel(boolean mayInterruptIfRunning) {
-		return false;
-	}
+    @Override
+    public boolean isCancelled() {
+        return false;
+    }
 
-	@Override
-	public boolean isCancelled() {
-		return false;
-	}
+    @Override
+    public boolean isDone() {
+        return true;
+    }
 
-	@Override
-	public boolean isDone() {
-		return true;
-	}
+    @Override
+    public T get() {
+        return payload;
+    }
 
-	@Override
-	public T get() throws InterruptedException, ExecutionException {
-		return payload;
-	}
+    @Override
+    public T get(long timeout, TimeUnit unit) {
+        return get();
+    }
 
-	@Override
-	public T get(
-			long timeout,
-			TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
-		return get();
-	}
+    @Override
+    public void run() {}
 
-	@Override
-	public void run() {
-
-	}
-
-	@SuppressWarnings("unchecked")
-	public static <T> DoneFuture<T> nullValue() {
-		return (DoneFuture<T>) NULL_FUTURE;
-	}
+    public static <T> DoneFuture<T> of(@Nullable T result) {
+        return new DoneFuture<>(result);
+    }
 }

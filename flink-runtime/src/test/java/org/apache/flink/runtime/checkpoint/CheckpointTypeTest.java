@@ -18,25 +18,24 @@
 
 package org.apache.flink.runtime.checkpoint;
 
-import org.apache.flink.runtime.checkpoint.CheckpointOptions.CheckpointType;
-
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 
 public class CheckpointTypeTest {
 
-	/**
-	 * This test validates that the order of enumeration constants is not changed, because the
-	 * ordinal of that enum is used in serialization.
-	 *
-	 * <p>It is still possible to edit both the ordinal and this test, but the test adds
-	 * a level of safety, and should make developers stumble over this when attempting
-	 * to adjust the enumeration.
-	 */
-	@Test
-	public void testOrdinalsAreConstant() {
-		assertEquals(0, CheckpointType.CHECKPOINT.ordinal());
-		assertEquals(1, CheckpointType.SAVEPOINT.ordinal());
-	}
+    /**
+     * This test validates that the order of enumeration constants is not changed, because the
+     * ordinal of that enum is used in serialization.
+     *
+     * <p>It is still possible to edit both the ordinal and this test, but the test adds a level of
+     * safety, and should make developers stumble over this when attempting to adjust the
+     * enumeration.
+     */
+    @Test
+    public void testOrdinalsAreConstant() {
+        assertEquals(0, CheckpointType.CHECKPOINT.ordinal());
+        assertEquals(1, CheckpointType.SAVEPOINT.ordinal());
+        assertEquals(2, CheckpointType.SAVEPOINT_SUSPEND.ordinal());
+    }
 }

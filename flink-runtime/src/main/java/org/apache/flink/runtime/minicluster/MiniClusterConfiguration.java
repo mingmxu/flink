@@ -18,193 +18,200 @@
 
 package org.apache.flink.runtime.minicluster;
 
-import org.apache.flink.api.common.time.Time;
-import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.configuration.AkkaOptions;
+import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.configuration.UnmodifiableConfiguration;
-import org.apache.flink.runtime.akka.AkkaUtils;
+import org.apache.flink.runtime.taskexecutor.TaskExecutorResourceUtils;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 
-import scala.concurrent.duration.FiniteDuration;
+import java.time.Duration;
 
-import static org.apache.flink.runtime.minicluster.MiniClusterConfiguration.RpcServiceSharing.SHARED;
+import static org.apache.flink.runtime.minicluster.RpcServiceSharing.SHARED;
 
-/**
- * Configuration object for the {@link MiniCluster}.
- */
+/** Configuration object for the {@link MiniCluster}. */
 public class MiniClusterConfiguration {
 
-	private final UnmodifiableConfiguration configuration;
+    static final int DEFAULT_IO_POOL_SIZE = 4;
 
-	private final int numJobManagers;
+    private final UnmodifiableConfiguration configuration;
 
-	private final int numTaskManagers;
+    private final int numTaskManagers;
 
-	private final int numResourceManagers;
+    private final RpcServiceSharing rpcServiceSharing;
 
-	private final RpcServiceSharing rpcServiceSharing;
+    @Nullable private final String commonBindAddress;
 
-	@Nullable
-	private final String commonBindAddress;
+    private final MiniCluster.HaServices haServices;
 
-	// ------------------------------------------------------------------------
-	//  Construction
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    //  Construction
+    // ------------------------------------------------------------------------
 
-	public MiniClusterConfiguration(
-			Configuration configuration,
-			int numJobManagers,
-			int numTaskManagers,
-			int numResourceManagers,
-			RpcServiceSharing rpcServiceSharing,
-			@Nullable String commonBindAddress) {
+    public MiniClusterConfiguration(
+            Configuration configuration,
+            int numTaskManagers,
+            RpcServiceSharing rpcServiceSharing,
+            @Nullable String commonBindAddress,
+            MiniCluster.HaServices haServices) {
+        this.numTaskManagers = numTaskManagers;
+        this.configuration = generateConfiguration(Preconditions.checkNotNull(configuration));
+        this.rpcServiceSharing = Preconditions.checkNotNull(rpcServiceSharing);
+        this.commonBindAddress = commonBindAddress;
+        this.haServices = haServices;
+    }
 
-		this.configuration = new UnmodifiableConfiguration(Preconditions.checkNotNull(configuration));
-		this.numJobManagers = numJobManagers;
-		this.numTaskManagers = numTaskManagers;
-		this.numResourceManagers = numResourceManagers;
-		this.rpcServiceSharing = Preconditions.checkNotNull(rpcServiceSharing);
-		this.commonBindAddress = commonBindAddress;
-	}
+    private UnmodifiableConfiguration generateConfiguration(final Configuration configuration) {
+        final Configuration modifiedConfig = new Configuration(configuration);
 
-	// ------------------------------------------------------------------------
-	//  getters
-	// ------------------------------------------------------------------------
+        TaskExecutorResourceUtils.adjustForLocalExecution(modifiedConfig);
 
-	public RpcServiceSharing getRpcServiceSharing() {
-		return rpcServiceSharing;
-	}
+        // set default io pool size.
+        if (!modifiedConfig.contains(ClusterOptions.CLUSTER_IO_EXECUTOR_POOL_SIZE)) {
+            modifiedConfig.set(ClusterOptions.CLUSTER_IO_EXECUTOR_POOL_SIZE, DEFAULT_IO_POOL_SIZE);
+        }
 
-	public int getNumJobManagers() {
-		return numJobManagers;
-	}
+        // increase the akka.ask.timeout if not set in order to harden tests on slow CI
+        if (!modifiedConfig.contains(AkkaOptions.ASK_TIMEOUT_DURATION)) {
+            modifiedConfig.set(AkkaOptions.ASK_TIMEOUT_DURATION, Duration.ofMinutes(5L));
+        }
 
-	public int getNumTaskManagers() {
-		return numTaskManagers;
-	}
+        return new UnmodifiableConfiguration(modifiedConfig);
+    }
 
-	public int getNumResourceManagers() {
-		return numResourceManagers;
-	}
+    // ------------------------------------------------------------------------
+    //  getters
+    // ------------------------------------------------------------------------
 
-	public String getJobManagerBindAddress() {
-		return commonBindAddress != null ?
-				commonBindAddress :
-				configuration.getString(JobManagerOptions.ADDRESS, "localhost");
-	}
+    public RpcServiceSharing getRpcServiceSharing() {
+        return rpcServiceSharing;
+    }
 
-	public String getTaskManagerBindAddress() {
-		return commonBindAddress != null ?
-				commonBindAddress :
-				configuration.getString(ConfigConstants.TASK_MANAGER_HOSTNAME_KEY, "localhost");
-	}
+    public int getNumTaskManagers() {
+        return numTaskManagers;
+    }
 
-	public String getResourceManagerBindAddress() {
-		return commonBindAddress != null ?
-			commonBindAddress :
-			configuration.getString(JobManagerOptions.ADDRESS, "localhost"); // TODO: Introduce proper configuration constant for the resource manager hostname
-	}
+    public String getJobManagerExternalAddress() {
+        return commonBindAddress != null
+                ? commonBindAddress
+                : configuration.getString(JobManagerOptions.ADDRESS, "localhost");
+    }
 
-	public Time getRpcTimeout() {
-		FiniteDuration duration = AkkaUtils.getTimeout(configuration);
-		return Time.of(duration.length(), duration.unit());
-	}
+    public String getTaskManagerExternalAddress() {
+        return commonBindAddress != null
+                ? commonBindAddress
+                : configuration.getString(TaskManagerOptions.HOST, "localhost");
+    }
 
-	public UnmodifiableConfiguration getConfiguration() {
-		return configuration;
-	}
+    public String getJobManagerExternalPortRange() {
+        return String.valueOf(configuration.getInteger(JobManagerOptions.PORT, 0));
+    }
 
-	@Override
-	public String toString() {
-		return "MiniClusterConfiguration {" +
-				"singleRpcService=" + rpcServiceSharing +
-				", numJobManagers=" + numJobManagers +
-				", numTaskManagers=" + numTaskManagers +
-				", numResourceManagers=" + numResourceManagers +
-				", commonBindAddress='" + commonBindAddress + '\'' +
-				", config=" + configuration +
-				'}';
-	}
+    public String getTaskManagerExternalPortRange() {
+        return configuration.getString(TaskManagerOptions.RPC_PORT);
+    }
 
-	// ----------------------------------------------------------------------------------
-	// Enums
-	// ----------------------------------------------------------------------------------
+    public String getJobManagerBindAddress() {
+        return commonBindAddress != null
+                ? commonBindAddress
+                : configuration.getString(JobManagerOptions.BIND_HOST, "localhost");
+    }
 
-	/**
-	 * Enum which defines whether the mini cluster components use a shared RpcService
-	 * or whether every component gets its own dedicated RpcService started.
-	 */
-	public enum RpcServiceSharing {
-		SHARED, // a single shared rpc service
-		DEDICATED // every component gets his own dedicated rpc service
-	}
+    public String getTaskManagerBindAddress() {
+        return commonBindAddress != null
+                ? commonBindAddress
+                : configuration.getString(TaskManagerOptions.BIND_HOST, "localhost");
+    }
 
-	// ----------------------------------------------------------------------------------
-	// Builder
-	// ----------------------------------------------------------------------------------
+    public UnmodifiableConfiguration getConfiguration() {
+        return configuration;
+    }
 
-	/**
-	 * Builder for the MiniClusterConfiguration.
-	 */
-	public static class Builder {
-		private Configuration configuration = new Configuration();
-		private int numJobManagers = 1;
-		private int numTaskManagers = 1;
-		private int numSlotsPerTaskManager = 1;
-		private int numResourceManagers = 1;
-		private RpcServiceSharing rpcServiceSharing = SHARED;
-		@Nullable
-		private String commonBindAddress = null;
+    public MiniCluster.HaServices getHaServices() {
+        return haServices;
+    }
 
-		public Builder setConfiguration(Configuration configuration1) {
-			this.configuration = Preconditions.checkNotNull(configuration1);
-			return this;
-		}
+    @Override
+    public String toString() {
+        return "MiniClusterConfiguration {"
+                + "singleRpcService="
+                + rpcServiceSharing
+                + ", numTaskManagers="
+                + numTaskManagers
+                + ", commonBindAddress='"
+                + commonBindAddress
+                + '\''
+                + ", config="
+                + configuration
+                + '}';
+    }
 
-		public Builder setNumJobManagers(int numJobManagers) {
-			this.numJobManagers = numJobManagers;
-			return this;
-		}
+    // ----------------------------------------------------------------------------------
+    // Enums
+    // ----------------------------------------------------------------------------------
 
-		public Builder setNumTaskManagers(int numTaskManagers) {
-			this.numTaskManagers = numTaskManagers;
-			return this;
-		}
+    // ----------------------------------------------------------------------------------
+    // Builder
+    // ----------------------------------------------------------------------------------
 
-		public Builder setNumSlotsPerTaskManager(int numSlotsPerTaskManager) {
-			this.numSlotsPerTaskManager = numSlotsPerTaskManager;
-			return this;
-		}
+    /** Builder for the MiniClusterConfiguration. */
+    public static class Builder {
+        private Configuration configuration = new Configuration();
+        private int numTaskManagers = 1;
+        private int numSlotsPerTaskManager = 1;
+        private RpcServiceSharing rpcServiceSharing = SHARED;
+        @Nullable private String commonBindAddress = null;
+        private MiniCluster.HaServices haServices = MiniCluster.HaServices.CONFIGURED;
 
-		public Builder setNumResourceManagers(int numResourceManagers) {
-			this.numResourceManagers = numResourceManagers;
-			return this;
-		}
+        public Builder setConfiguration(Configuration configuration1) {
+            this.configuration = Preconditions.checkNotNull(configuration1);
+            return this;
+        }
 
-		public Builder setRpcServiceSharing(RpcServiceSharing rpcServiceSharing) {
-			this.rpcServiceSharing = Preconditions.checkNotNull(rpcServiceSharing);
-			return this;
-		}
+        public Builder setNumTaskManagers(int numTaskManagers) {
+            this.numTaskManagers = numTaskManagers;
+            return this;
+        }
 
-		public Builder setCommonBindAddress(String commonBindAddress) {
-			this.commonBindAddress = commonBindAddress;
-			return this;
-		}
+        public Builder setNumSlotsPerTaskManager(int numSlotsPerTaskManager) {
+            this.numSlotsPerTaskManager = numSlotsPerTaskManager;
+            return this;
+        }
 
-		public MiniClusterConfiguration build() {
-			final Configuration modifiedConfiguration = new Configuration(configuration);
-			modifiedConfiguration.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, numSlotsPerTaskManager);
+        public Builder setRpcServiceSharing(RpcServiceSharing rpcServiceSharing) {
+            this.rpcServiceSharing = Preconditions.checkNotNull(rpcServiceSharing);
+            return this;
+        }
 
-			return new MiniClusterConfiguration(
-				modifiedConfiguration,
-				numJobManagers,
-				numTaskManagers,
-				numResourceManagers,
-				rpcServiceSharing,
-				commonBindAddress);
-		}
-	}
+        public Builder setCommonBindAddress(String commonBindAddress) {
+            this.commonBindAddress = commonBindAddress;
+            return this;
+        }
+
+        public Builder setHaServices(MiniCluster.HaServices haServices) {
+            this.haServices = haServices;
+            return this;
+        }
+
+        public MiniClusterConfiguration build() {
+            final Configuration modifiedConfiguration = new Configuration(configuration);
+            modifiedConfiguration.setInteger(
+                    TaskManagerOptions.NUM_TASK_SLOTS, numSlotsPerTaskManager);
+            modifiedConfiguration.setString(
+                    RestOptions.ADDRESS,
+                    modifiedConfiguration.getString(RestOptions.ADDRESS, "localhost"));
+
+            return new MiniClusterConfiguration(
+                    modifiedConfiguration,
+                    numTaskManagers,
+                    rpcServiceSharing,
+                    commonBindAddress,
+                    haServices);
+        }
+    }
 }

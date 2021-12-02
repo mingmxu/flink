@@ -25,7 +25,9 @@ import org.apache.flink.runtime.leaderelection.LeaderElectionService;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.util.Preconditions;
 
+import javax.annotation.Nonnull;
 import javax.annotation.concurrent.GuardedBy;
+
 import java.util.HashMap;
 import java.util.concurrent.Executor;
 
@@ -36,109 +38,142 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * where all participants (ResourceManager, JobManagers, TaskManagers) run in the same process.
  *
  * <p>This implementation has no dependencies on any external services. It returns a fix
- * pre-configured ResourceManager, and stores checkpoints and metadata simply on the heap or
- * on a local file system and therefore in a storage without guarantees.
+ * pre-configured ResourceManager, and stores checkpoints and metadata simply on the heap or on a
+ * local file system and therefore in a storage without guarantees.
  */
 public class EmbeddedHaServices extends AbstractNonHaServices {
 
-	private final Executor executor;
+    private final Executor executor;
 
-	private final EmbeddedLeaderService resourceManagerLeaderService;
+    private final EmbeddedLeaderService resourceManagerLeaderService;
 
-	private final EmbeddedLeaderService dispatcherLeaderService;
+    private final EmbeddedLeaderService dispatcherLeaderService;
 
-	private final HashMap<JobID, EmbeddedLeaderService> jobManagerLeaderServices;
+    private final HashMap<JobID, EmbeddedLeaderService> jobManagerLeaderServices;
 
-	public EmbeddedHaServices(Executor executor) {
-		this.executor = Preconditions.checkNotNull(executor);
-		this.resourceManagerLeaderService = new EmbeddedLeaderService(executor);
-		this.dispatcherLeaderService = new EmbeddedLeaderService(executor);
-		this.jobManagerLeaderServices = new HashMap<>();
-	}
+    private final EmbeddedLeaderService clusterRestEndpointLeaderService;
 
-	// ------------------------------------------------------------------------
-	//  services
-	// ------------------------------------------------------------------------
+    public EmbeddedHaServices(Executor executor) {
+        this.executor = Preconditions.checkNotNull(executor);
+        this.resourceManagerLeaderService = createEmbeddedLeaderService(executor);
+        this.dispatcherLeaderService = createEmbeddedLeaderService(executor);
+        this.jobManagerLeaderServices = new HashMap<>();
+        this.clusterRestEndpointLeaderService = createEmbeddedLeaderService(executor);
+    }
 
-	@Override
-	public LeaderRetrievalService getResourceManagerLeaderRetriever() {
-		return resourceManagerLeaderService.createLeaderRetrievalService();
-	}
+    // ------------------------------------------------------------------------
+    //  services
+    // ------------------------------------------------------------------------
 
-	@Override
-	public LeaderRetrievalService getDispatcherLeaderRetriever() {
-		return dispatcherLeaderService.createLeaderRetrievalService();
-	}
+    @Override
+    public LeaderRetrievalService getResourceManagerLeaderRetriever() {
+        return resourceManagerLeaderService.createLeaderRetrievalService();
+    }
 
-	@Override
-	public LeaderElectionService getResourceManagerLeaderElectionService() {
-		return resourceManagerLeaderService.createLeaderElectionService();
-	}
+    @Override
+    public LeaderRetrievalService getDispatcherLeaderRetriever() {
+        return dispatcherLeaderService.createLeaderRetrievalService();
+    }
 
-	@Override
-	public LeaderElectionService getDispatcherLeaderElectionService() {
-		return dispatcherLeaderService.createLeaderElectionService();
-	}
+    @Override
+    public LeaderElectionService getResourceManagerLeaderElectionService() {
+        return resourceManagerLeaderService.createLeaderElectionService();
+    }
 
-	@Override
-	public LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID) {
-		checkNotNull(jobID);
+    @Override
+    public LeaderElectionService getDispatcherLeaderElectionService() {
+        return dispatcherLeaderService.createLeaderElectionService();
+    }
 
-		synchronized (lock) {
-			checkNotShutdown();
-			EmbeddedLeaderService service = getOrCreateJobManagerService(jobID);
-			return service.createLeaderRetrievalService();
-		}
-	}
+    @Override
+    public LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID) {
+        checkNotNull(jobID);
 
-	@Override
-	public LeaderRetrievalService getJobManagerLeaderRetriever(JobID jobID, String defaultJobManagerAddress) {
-		return getJobManagerLeaderRetriever(jobID);
-	}
+        synchronized (lock) {
+            checkNotShutdown();
+            EmbeddedLeaderService service = getOrCreateJobManagerService(jobID);
+            return service.createLeaderRetrievalService();
+        }
+    }
 
-	@Override
-	public LeaderElectionService getJobManagerLeaderElectionService(JobID jobID) {
-		checkNotNull(jobID);
+    @Override
+    public LeaderRetrievalService getJobManagerLeaderRetriever(
+            JobID jobID, String defaultJobManagerAddress) {
+        return getJobManagerLeaderRetriever(jobID);
+    }
 
-		synchronized (lock) {
-			checkNotShutdown();
-			EmbeddedLeaderService service = getOrCreateJobManagerService(jobID);
-			return service.createLeaderElectionService();
-		}
-	}
+    @Override
+    public LeaderRetrievalService getClusterRestEndpointLeaderRetriever() {
+        return clusterRestEndpointLeaderService.createLeaderRetrievalService();
+    }
 
-	// ------------------------------------------------------------------------
-	// internal
-	// ------------------------------------------------------------------------
+    @Override
+    public LeaderElectionService getJobManagerLeaderElectionService(JobID jobID) {
+        checkNotNull(jobID);
 
-	@GuardedBy("lock")
-	private EmbeddedLeaderService getOrCreateJobManagerService(JobID jobID) {
-		EmbeddedLeaderService service = jobManagerLeaderServices.get(jobID);
-		if (service == null) {
-			service = new EmbeddedLeaderService(executor);
-			jobManagerLeaderServices.put(jobID, service);
-		}
-		return service;
-	}
+        synchronized (lock) {
+            checkNotShutdown();
+            EmbeddedLeaderService service = getOrCreateJobManagerService(jobID);
+            return service.createLeaderElectionService();
+        }
+    }
 
-	// ------------------------------------------------------------------------
-	//  shutdown
-	// ------------------------------------------------------------------------
+    @Override
+    public LeaderElectionService getClusterRestEndpointLeaderElectionService() {
+        return clusterRestEndpointLeaderService.createLeaderElectionService();
+    }
 
-	@Override
-	public void close() throws Exception {
-		synchronized (lock) {
-			if (!isShutDown()) {
-				// stop all job manager leader services
-				for (EmbeddedLeaderService service : jobManagerLeaderServices.values()) {
-					service.shutdown();
-				}
-				jobManagerLeaderServices.clear();
+    // ------------------------------------------------------------------------
+    // internal
+    // ------------------------------------------------------------------------
 
-				resourceManagerLeaderService.shutdown();
-			}
+    EmbeddedLeaderService getDispatcherLeaderService() {
+        return dispatcherLeaderService;
+    }
 
-			super.close();
-		}
-	}
+    EmbeddedLeaderService getJobManagerLeaderService(JobID jobId) {
+        return jobManagerLeaderServices.get(jobId);
+    }
+
+    EmbeddedLeaderService getResourceManagerLeaderService() {
+        return resourceManagerLeaderService;
+    }
+
+    @Nonnull
+    private EmbeddedLeaderService createEmbeddedLeaderService(Executor executor) {
+        return new EmbeddedLeaderService(executor);
+    }
+
+    @GuardedBy("lock")
+    private EmbeddedLeaderService getOrCreateJobManagerService(JobID jobID) {
+        EmbeddedLeaderService service = jobManagerLeaderServices.get(jobID);
+        if (service == null) {
+            service = createEmbeddedLeaderService(executor);
+            jobManagerLeaderServices.put(jobID, service);
+        }
+        return service;
+    }
+
+    // ------------------------------------------------------------------------
+    //  shutdown
+    // ------------------------------------------------------------------------
+
+    @Override
+    public void close() throws Exception {
+        synchronized (lock) {
+            if (!isShutDown()) {
+                // stop all job manager leader services
+                for (EmbeddedLeaderService service : jobManagerLeaderServices.values()) {
+                    service.shutdown();
+                }
+                jobManagerLeaderServices.clear();
+
+                resourceManagerLeaderService.shutdown();
+
+                clusterRestEndpointLeaderService.shutdown();
+            }
+
+            super.close();
+        }
+    }
 }

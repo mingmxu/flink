@@ -18,120 +18,188 @@
 package org.apache.flink.streaming.api.graph;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.streaming.api.transformations.StreamExchangeMode;
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
 import org.apache.flink.util.OutputTag;
 
 import java.io.Serializable;
-import java.util.List;
+import java.util.Objects;
+
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * An edge in the streaming topology. One edge like this does not necessarily
- * gets converted to a connection between two job vertices (due to
- * chaining/optimization).
+ * An edge in the streaming topology. One edge like this does not necessarily gets converted to a
+ * connection between two job vertices (due to chaining/optimization).
  */
 @Internal
 public class StreamEdge implements Serializable {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private final String edgeId;
+    private static final long ALWAYS_FLUSH_BUFFER_TIMEOUT = 0L;
 
-	private final StreamNode sourceVertex;
-	private final StreamNode targetVertex;
+    private final String edgeId;
 
-	/**
-	 * The type number of the input for co-tasks.
-	 */
-	private final int typeNumber;
+    private final int sourceId;
+    private final int targetId;
 
-	/**
-	 * A list of output names that the target vertex listens to (if there is
-	 * output selection).
-	 */
-	private final List<String> selectedNames;
+    /** The type number of the input for co-tasks. */
+    private final int typeNumber;
+    /** The side-output tag (if any) of this {@link StreamEdge}. */
+    private final OutputTag outputTag;
 
-	/**
-	 * The side-output tag (if any) of this {@link StreamEdge}.
-	 */
-	private final OutputTag outputTag;
+    /** The {@link StreamPartitioner} on this {@link StreamEdge}. */
+    private StreamPartitioner<?> outputPartitioner;
 
-	/**
-	 * The {@link StreamPartitioner} on this {@link StreamEdge}.
-	 */
-	private StreamPartitioner<?> outputPartitioner;
+    /** The name of the operator in the source vertex. */
+    private final String sourceOperatorName;
 
-	public StreamEdge(StreamNode sourceVertex, StreamNode targetVertex, int typeNumber,
-			List<String> selectedNames, StreamPartitioner<?> outputPartitioner, OutputTag outputTag) {
-		this.sourceVertex = sourceVertex;
-		this.targetVertex = targetVertex;
-		this.typeNumber = typeNumber;
-		this.selectedNames = selectedNames;
-		this.outputPartitioner = outputPartitioner;
-		this.outputTag = outputTag;
+    /** The name of the operator in the target vertex. */
+    private final String targetOperatorName;
 
-		this.edgeId = sourceVertex + "_" + targetVertex + "_" + typeNumber + "_" + selectedNames
-				+ "_" + outputPartitioner;
-	}
+    private final StreamExchangeMode exchangeMode;
 
-	public StreamNode getSourceVertex() {
-		return sourceVertex;
-	}
+    private long bufferTimeout;
 
-	public StreamNode getTargetVertex() {
-		return targetVertex;
-	}
+    private boolean supportsUnalignedCheckpoints = true;
 
-	public int getSourceId() {
-		return sourceVertex.getId();
-	}
+    public StreamEdge(
+            StreamNode sourceVertex,
+            StreamNode targetVertex,
+            int typeNumber,
+            StreamPartitioner<?> outputPartitioner,
+            OutputTag outputTag) {
 
-	public int getTargetId() {
-		return targetVertex.getId();
-	}
+        this(
+                sourceVertex,
+                targetVertex,
+                typeNumber,
+                ALWAYS_FLUSH_BUFFER_TIMEOUT,
+                outputPartitioner,
+                outputTag,
+                StreamExchangeMode.UNDEFINED);
+    }
 
-	public int getTypeNumber() {
-		return typeNumber;
-	}
+    public StreamEdge(
+            StreamNode sourceVertex,
+            StreamNode targetVertex,
+            int typeNumber,
+            StreamPartitioner<?> outputPartitioner,
+            OutputTag outputTag,
+            StreamExchangeMode exchangeMode) {
 
-	public List<String> getSelectedNames() {
-		return selectedNames;
-	}
+        this(
+                sourceVertex,
+                targetVertex,
+                typeNumber,
+                sourceVertex.getBufferTimeout(),
+                outputPartitioner,
+                outputTag,
+                exchangeMode);
+    }
 
-	public OutputTag getOutputTag() {
-		return this.outputTag;
-	}
+    public StreamEdge(
+            StreamNode sourceVertex,
+            StreamNode targetVertex,
+            int typeNumber,
+            long bufferTimeout,
+            StreamPartitioner<?> outputPartitioner,
+            OutputTag outputTag,
+            StreamExchangeMode exchangeMode) {
 
-	public StreamPartitioner<?> getPartitioner() {
-		return outputPartitioner;
-	}
+        this.sourceId = sourceVertex.getId();
+        this.targetId = targetVertex.getId();
+        this.typeNumber = typeNumber;
+        this.bufferTimeout = bufferTimeout;
+        this.outputPartitioner = outputPartitioner;
+        this.outputTag = outputTag;
+        this.sourceOperatorName = sourceVertex.getOperatorName();
+        this.targetOperatorName = targetVertex.getOperatorName();
+        this.exchangeMode = checkNotNull(exchangeMode);
+        this.edgeId =
+                sourceVertex + "_" + targetVertex + "_" + typeNumber + "_" + outputPartitioner;
+    }
 
-	public void setPartitioner(StreamPartitioner<?> partitioner) {
-		this.outputPartitioner = partitioner;
-	}
+    public int getSourceId() {
+        return sourceId;
+    }
 
-	@Override
-	public int hashCode() {
-		return edgeId.hashCode();
-	}
+    public int getTargetId() {
+        return targetId;
+    }
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (o == null || getClass() != o.getClass()) {
-			return false;
-		}
+    public int getTypeNumber() {
+        return typeNumber;
+    }
 
-		StreamEdge that = (StreamEdge) o;
+    public OutputTag getOutputTag() {
+        return this.outputTag;
+    }
 
-		return edgeId.equals(that.edgeId);
-	}
+    public StreamPartitioner<?> getPartitioner() {
+        return outputPartitioner;
+    }
 
-	@Override
-	public String toString() {
-		return "(" + sourceVertex + " -> " + targetVertex + ", typeNumber=" + typeNumber
-				+ ", selectedNames=" + selectedNames + ", outputPartitioner=" + outputPartitioner
-				+ ", outputTag=" + outputTag + ')';
-	}
+    public StreamExchangeMode getExchangeMode() {
+        return exchangeMode;
+    }
+
+    public void setPartitioner(StreamPartitioner<?> partitioner) {
+        this.outputPartitioner = partitioner;
+    }
+
+    public void setBufferTimeout(long bufferTimeout) {
+        checkArgument(bufferTimeout >= -1);
+        this.bufferTimeout = bufferTimeout;
+    }
+
+    public long getBufferTimeout() {
+        return bufferTimeout;
+    }
+
+    public void setSupportsUnalignedCheckpoints(boolean supportsUnalignedCheckpoints) {
+        this.supportsUnalignedCheckpoints = supportsUnalignedCheckpoints;
+    }
+
+    public boolean supportsUnalignedCheckpoints() {
+        return supportsUnalignedCheckpoints;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(edgeId, outputTag);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+
+        StreamEdge that = (StreamEdge) o;
+        return Objects.equals(edgeId, that.edgeId) && Objects.equals(outputTag, that.outputTag);
+    }
+
+    @Override
+    public String toString() {
+        return "("
+                + (sourceOperatorName + "-" + sourceId)
+                + " -> "
+                + (targetOperatorName + "-" + targetId)
+                + ", typeNumber="
+                + typeNumber
+                + ", outputPartitioner="
+                + outputPartitioner
+                + ", exchangeMode="
+                + exchangeMode
+                + ", bufferTimeout="
+                + bufferTimeout
+                + ", outputTag="
+                + outputTag
+                + ')';
+    }
 }

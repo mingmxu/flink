@@ -18,6 +18,7 @@
 package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.Output;
@@ -25,6 +26,7 @@ import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.io.BlockingQueueBroker;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.util.OutputTag;
 
 import org.slf4j.Logger;
@@ -40,101 +42,112 @@ import java.util.concurrent.TimeUnit;
 @Internal
 public class StreamIterationTail<IN> extends OneInputStreamTask<IN, IN> {
 
-	private static final Logger LOG = LoggerFactory.getLogger(StreamIterationTail.class);
+    private static final Logger LOG = LoggerFactory.getLogger(StreamIterationTail.class);
 
-	@Override
-	public void init() throws Exception {
+    public StreamIterationTail(Environment environment) throws Exception {
+        super(environment);
+    }
 
-		final String iterationId = getConfiguration().getIterationId();
-		if (iterationId == null || iterationId.length() == 0) {
-			throw new Exception("Missing iteration ID in the task configuration");
-		}
+    @Override
+    public void init() throws Exception {
 
-		final String brokerID = StreamIterationHead.createBrokerIdString(getEnvironment().getJobID(), iterationId,
-				getEnvironment().getTaskInfo().getIndexOfThisSubtask());
+        final String iterationId = getConfiguration().getIterationId();
+        if (iterationId == null || iterationId.length() == 0) {
+            throw new Exception("Missing iteration ID in the task configuration");
+        }
 
-		final long iterationWaitTime = getConfiguration().getIterationWaitTime();
+        final String brokerID =
+                StreamIterationHead.createBrokerIdString(
+                        getEnvironment().getJobID(),
+                        iterationId,
+                        getEnvironment().getTaskInfo().getIndexOfThisSubtask());
 
-		LOG.info("Iteration tail {} trying to acquire feedback queue under {}", getName(), brokerID);
+        final long iterationWaitTime = getConfiguration().getIterationWaitTime();
 
-		@SuppressWarnings("unchecked")
-		BlockingQueue<StreamRecord<IN>> dataChannel =
-				(BlockingQueue<StreamRecord<IN>>) BlockingQueueBroker.INSTANCE.get(brokerID);
+        LOG.info(
+                "Iteration tail {} trying to acquire feedback queue under {}", getName(), brokerID);
 
-		LOG.info("Iteration tail {} acquired feedback queue {}", getName(), brokerID);
+        @SuppressWarnings("unchecked")
+        BlockingQueue<StreamRecord<IN>> dataChannel =
+                (BlockingQueue<StreamRecord<IN>>) BlockingQueueBroker.INSTANCE.get(brokerID);
 
-		this.headOperator = new RecordPusher<>();
-		this.headOperator.setup(this, getConfiguration(), new IterationTailOutput<>(dataChannel, iterationWaitTime));
+        LOG.info("Iteration tail {} acquired feedback queue {}", getName(), brokerID);
 
-		// call super.init() last because that needs this.headOperator to be set up
-		super.init();
-	}
+        RecordPusher<IN> headOperator = new RecordPusher<>();
+        headOperator.setup(
+                this,
+                getConfiguration(),
+                new IterationTailOutput<>(dataChannel, iterationWaitTime));
+        this.mainOperator = headOperator;
 
-	private static class RecordPusher<IN> extends AbstractStreamOperator<IN> implements OneInputStreamOperator<IN, IN> {
+        // call super.init() last because that needs this.headOperator to be set up
+        super.init();
+    }
 
-		private static final long serialVersionUID = 1L;
+    private static class RecordPusher<IN> extends AbstractStreamOperator<IN>
+            implements OneInputStreamOperator<IN, IN> {
 
-		@Override
-		public void processElement(StreamRecord<IN> record) throws Exception {
-			output.collect(record);
-		}
+        private static final long serialVersionUID = 1L;
 
-		@Override
-		public void processWatermark(Watermark mark) {
-			// ignore
-		}
+        @Override
+        public void processElement(StreamRecord<IN> record) throws Exception {
+            output.collect(record);
+        }
 
-		@Override
-		public void processLatencyMarker(LatencyMarker latencyMarker) throws Exception {
-			// ignore
-		}
-	}
+        @Override
+        public void processWatermark(Watermark mark) {
+            // ignore
+        }
 
-	private static class IterationTailOutput<IN> implements Output<StreamRecord<IN>> {
+        @Override
+        public void processLatencyMarker(LatencyMarker latencyMarker) throws Exception {
+            // ignore
+        }
+    }
 
-		@SuppressWarnings("NonSerializableFieldInSerializableClass")
-		private final BlockingQueue<StreamRecord<IN>> dataChannel;
+    private static class IterationTailOutput<IN> implements Output<StreamRecord<IN>> {
 
-		private final long iterationWaitTime;
+        @SuppressWarnings("NonSerializableFieldInSerializableClass")
+        private final BlockingQueue<StreamRecord<IN>> dataChannel;
 
-		private final boolean shouldWait;
+        private final long iterationWaitTime;
 
-		IterationTailOutput(BlockingQueue<StreamRecord<IN>> dataChannel, long iterationWaitTime) {
-			this.dataChannel = dataChannel;
-			this.iterationWaitTime = iterationWaitTime;
-			this.shouldWait =  iterationWaitTime > 0;
-		}
+        private final boolean shouldWait;
 
-		@Override
-		public void emitWatermark(Watermark mark) {
-		}
+        IterationTailOutput(BlockingQueue<StreamRecord<IN>> dataChannel, long iterationWaitTime) {
+            this.dataChannel = dataChannel;
+            this.iterationWaitTime = iterationWaitTime;
+            this.shouldWait = iterationWaitTime > 0;
+        }
 
-		@Override
-		public void emitLatencyMarker(LatencyMarker latencyMarker) {
-		}
+        @Override
+        public void emitWatermark(Watermark mark) {}
 
-		@Override
-		public void collect(StreamRecord<IN> record) {
-			try {
-				if (shouldWait) {
-					dataChannel.offer(record, iterationWaitTime, TimeUnit.MILLISECONDS);
-				}
-				else {
-					dataChannel.put(record);
-				}
-			} catch (InterruptedException e) {
-				throw new RuntimeException(e);
-			}
-		}
+        @Override
+        public void emitWatermarkStatus(WatermarkStatus watermarkStatus) {}
 
-		@Override
-		public <X> void collect(OutputTag<X> outputTag, StreamRecord<X> record) {
-			throw new UnsupportedOperationException("Side outputs not used in iteration tail");
+        @Override
+        public void emitLatencyMarker(LatencyMarker latencyMarker) {}
 
-		}
+        @Override
+        public void collect(StreamRecord<IN> record) {
+            try {
+                if (shouldWait) {
+                    dataChannel.offer(record, iterationWaitTime, TimeUnit.MILLISECONDS);
+                } else {
+                    dataChannel.put(record);
+                }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
 
-		@Override
-		public void close() {
-		}
-	}
+        @Override
+        public <X> void collect(OutputTag<X> outputTag, StreamRecord<X> record) {
+            throw new UnsupportedOperationException("Side outputs not used in iteration tail");
+        }
+
+        @Override
+        public void close() {}
+    }
 }

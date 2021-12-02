@@ -18,134 +18,107 @@
 
 package org.apache.flink.test.util;
 
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
-
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.runners.Parameterized;
 
 import java.util.Arrays;
 import java.util.Collection;
 
 /**
- * Base class for unit tests that run multiple tests and want to reuse the same
- * Flink cluster. This saves a significant amount of time, since the startup and
- * shutdown of the Flink clusters (including actor systems, etc) usually dominates
- * the execution of the actual tests.
+ * Base class for unit tests that run multiple tests and want to reuse the same Flink cluster. This
+ * saves a significant amount of time, since the startup and shutdown of the Flink clusters
+ * (including actor systems, etc) usually dominates the execution of the actual tests.
  *
- * <p>To write a unit test against this test base, simply extend it and add
- * one or more regular test methods and retrieve the ExecutionEnvironment from
- * the context:
+ * <p>To write a unit test against this test base, simply extend it and add one or more regular test
+ * methods and retrieve the ExecutionEnvironment from the context:
  *
  * <pre>{@code
+ * {@literal @}Test
+ * public void someTest() {
+ *     ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+ *     // test code
+ *     env.execute();
+ * }
  *
- *   {@literal @}Test
- *   public void someTest() {
- *       ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
- *       // test code
- *       env.execute();
- *   }
- *
- *   {@literal @}Test
- *   public void anotherTest() {
- *       ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
- *       // test code
- *       env.execute();
- *   }
+ * {@literal @}Test
+ * public void anotherTest() {
+ *     ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+ *     // test code
+ *     env.execute();
+ * }
  *
  * }</pre>
  */
-public class MultipleProgramsTestBase extends TestBaseUtils {
+public class MultipleProgramsTestBase extends AbstractTestBase {
 
-	/**
-	 * Enum that defines which execution environment to run the next test on:
-	 * An embedded local flink cluster, or the collection execution backend.
-	 */
-	public enum TestExecutionMode {
-		CLUSTER,
-		CLUSTER_OBJECT_REUSE,
-		COLLECTION,
-	}
+    /**
+     * Enum that defines which execution environment to run the next test on: An embedded local
+     * flink cluster, or the collection execution backend.
+     */
+    public enum TestExecutionMode {
+        CLUSTER,
+        CLUSTER_OBJECT_REUSE,
+        COLLECTION,
+    }
 
-	// ------------------------------------------------------------------------
-	//  The mini cluster that is shared across tests
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
-	protected static final int DEFAULT_PARALLELISM = 4;
+    protected final TestExecutionMode mode;
 
-	protected static boolean startWebServer = false;
+    public MultipleProgramsTestBase(TestExecutionMode mode) {
+        this.mode = mode;
+    }
 
-	protected static LocalFlinkMiniCluster cluster = null;
+    // ------------------------------------------------------------------------
+    //  Environment setup & teardown
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
+    @Before
+    public void setupEnvironment() {
+        TestEnvironment testEnvironment;
+        switch (mode) {
+            case CLUSTER:
+                // This only works because of the quirks we built in the TestEnvironment.
+                // We should refactor this in the future!!!
+                testEnvironment = miniClusterResource.getTestEnvironment();
+                testEnvironment.getConfig().disableObjectReuse();
+                testEnvironment.setAsContext();
+                break;
+            case CLUSTER_OBJECT_REUSE:
+                // This only works because of the quirks we built in the TestEnvironment.
+                // We should refactor this in the future!!!
+                testEnvironment = miniClusterResource.getTestEnvironment();
+                testEnvironment.getConfig().enableObjectReuse();
+                testEnvironment.setAsContext();
+                break;
+            case COLLECTION:
+                new CollectionTestEnvironment().setAsContext();
+                break;
+        }
+    }
 
-	protected final TestExecutionMode mode;
+    @After
+    public void teardownEnvironment() {
+        switch (mode) {
+            case CLUSTER:
+            case CLUSTER_OBJECT_REUSE:
+                TestEnvironment.unsetAsContext();
+                break;
+            case COLLECTION:
+                CollectionTestEnvironment.unsetAsContext();
+                break;
+        }
+    }
 
-	public MultipleProgramsTestBase(TestExecutionMode mode) {
-		this.mode = mode;
-	}
+    // ------------------------------------------------------------------------
+    //  Parametrization lets the tests run in cluster and collection mode
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
-	//  Environment setup & teardown
-	// ------------------------------------------------------------------------
-
-	@Before
-	public void setupEnvironment() {
-		switch(mode){
-			case CLUSTER:
-				new TestEnvironment(cluster, 4, false).setAsContext();
-				break;
-			case CLUSTER_OBJECT_REUSE:
-				new TestEnvironment(cluster, 4, true).setAsContext();
-				break;
-			case COLLECTION:
-				new CollectionTestEnvironment().setAsContext();
-				break;
-		}
-	}
-
-	@After
-	public void teardownEnvironment() {
-		switch(mode) {
-			case CLUSTER:
-			case CLUSTER_OBJECT_REUSE:
-				TestEnvironment.unsetAsContext();
-				break;
-			case COLLECTION:
-				CollectionTestEnvironment.unsetAsContext();
-				break;
-		}
-	}
-
-	// ------------------------------------------------------------------------
-	//  Cluster setup & teardown
-	// ------------------------------------------------------------------------
-
-	@BeforeClass
-	public static void setup() throws Exception {
-		cluster = TestBaseUtils.startCluster(
-			1,
-			DEFAULT_PARALLELISM,
-			startWebServer,
-			false,
-			true);
-	}
-
-	@AfterClass
-	public static void teardown() throws Exception {
-		stopCluster(cluster, TestBaseUtils.DEFAULT_TIMEOUT);
-	}
-
-	// ------------------------------------------------------------------------
-	//  Parametrization lets the tests run in cluster and collection mode
-	// ------------------------------------------------------------------------
-
-	@Parameterized.Parameters(name = "Execution mode = {0}")
-	public static Collection<Object[]> executionModes() {
-		return Arrays.asList(
-				new Object[] { TestExecutionMode.CLUSTER },
-				new Object[] { TestExecutionMode.COLLECTION });
-	}
+    @Parameterized.Parameters(name = "Execution mode = {0}")
+    public static Collection<Object[]> executionModes() {
+        return Arrays.asList(
+                new Object[] {TestExecutionMode.CLUSTER},
+                new Object[] {TestExecutionMode.COLLECTION});
+    }
 }

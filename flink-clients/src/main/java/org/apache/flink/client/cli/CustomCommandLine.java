@@ -18,72 +18,55 @@
 
 package org.apache.flink.client.cli;
 
-import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.util.FlinkException;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Options;
 
-import java.net.URL;
-import java.util.List;
+/** Custom command-line interface to load hooks for the command-line interface. */
+public interface CustomCommandLine {
 
-/**
- * Custom command-line interface to load hooks for the command-line interface.
- */
-public interface CustomCommandLine<ClusterType extends ClusterClient> {
+    /**
+     * Signals whether the custom command-line wants to execute or not.
+     *
+     * @param commandLine The command-line options
+     * @return True if the command-line wants to run, False otherwise
+     */
+    boolean isActive(CommandLine commandLine);
 
-	/**
-	 * Signals whether the custom command-line wants to execute or not.
-	 * @param commandLine The command-line options
-	 * @param configuration The Flink configuration
-	 * @return True if the command-line wants to run, False otherwise
-	 */
-	boolean isActive(CommandLine commandLine, Configuration configuration);
+    /**
+     * Gets the unique identifier of this CustomCommandLine.
+     *
+     * @return A unique identifier
+     */
+    String getId();
 
-	/**
-	 * Gets the unique identifier of this CustomCommandLine.
-	 * @return A unique identifier
-	 */
-	String getId();
+    /**
+     * Adds custom options to the existing run options.
+     *
+     * @param baseOptions The existing options.
+     */
+    void addRunOptions(Options baseOptions);
 
-	/**
-	 * Adds custom options to the existing run options.
-	 * @param baseOptions The existing options.
-	 */
-	void addRunOptions(Options baseOptions);
+    /**
+     * Adds custom options to the existing general options.
+     *
+     * @param baseOptions The existing options.
+     */
+    void addGeneralOptions(Options baseOptions);
 
-	/**
-	 * Adds custom options to the existing general options.
-	 * @param baseOptions The existing options.
-	 */
-	void addGeneralOptions(Options baseOptions);
+    /**
+     * Materializes the command line arguments in the given {@link CommandLine} to a {@link
+     * Configuration} and returns it.
+     */
+    Configuration toConfiguration(CommandLine commandLine) throws FlinkException;
 
-	/**
-	 * Retrieves a client for a running cluster.
-	 * @param commandLine The command-line parameters from the CliFrontend
-	 * @param config The Flink config
-	 * @param configurationDirectory Directory for configuration files
-	 * @return Client if a cluster could be retrieved
-	 * @throws UnsupportedOperationException if the operation is not supported
-	 */
-	ClusterType retrieveCluster(
-		CommandLine commandLine,
-		Configuration config,
-		String configurationDirectory) throws UnsupportedOperationException;
-
-	/**
-	 * Creates the client for the cluster.
-	 * @param applicationName The application name to use
-	 * @param commandLine The command-line options parsed by the CliFrontend
-	 * @param config The Flink config to use
-	 * @param configurationDirectory Directory for configuration files
-	 *@param userJarFiles User jar files to include in the classpath of the cluster.  @return The client to communicate with the cluster which the CustomCommandLine brought up.
-	 * @throws Exception if the cluster could not be created
-	 */
-	ClusterType createCluster(
-		String applicationName,
-		CommandLine commandLine,
-		Configuration config,
-		String configurationDirectory,
-		List<URL> userJarFiles) throws Exception;
+    default CommandLine parseCommandLineOptions(String[] args, boolean stopAtNonOptions)
+            throws CliArgsException {
+        final Options options = new Options();
+        addGeneralOptions(options);
+        addRunOptions(options);
+        return CliFrontendParser.parse(options, args, stopAtNonOptions);
+    }
 }

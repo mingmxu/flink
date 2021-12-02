@@ -18,7 +18,8 @@
 
 package org.apache.flink.queryablestate.client.state;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.state.State;
+import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.queryablestate.client.state.serialization.KvStateSerializer;
@@ -29,41 +30,39 @@ import java.io.IOException;
 /**
  * A read-only {@link ValueState} that does not allow for modifications.
  *
- * <p>This is the result returned when querying Flink's keyed state using the
- * {@link org.apache.flink.queryablestate.client.QueryableStateClient Queryable State Client} and
- * providing an {@link ValueStateDescriptor}.
+ * <p>This is the result returned when querying Flink's keyed state using the {@link
+ * org.apache.flink.queryablestate.client.QueryableStateClient Queryable State Client} and providing
+ * an {@link ValueStateDescriptor}.
  */
-@PublicEvolving
 public final class ImmutableValueState<V> extends ImmutableState implements ValueState<V> {
 
-	private final V value;
+    private final V value;
 
-	private ImmutableValueState(V value) {
-		this.value = Preconditions.checkNotNull(value);
-	}
+    private ImmutableValueState(V value) {
+        this.value = Preconditions.checkNotNull(value);
+    }
 
-	@Override
-	public V value() {
-		return value;
-	}
+    @Override
+    public V value() {
+        return value;
+    }
 
-	@Override
-	public void update(V newValue) {
-		throw MODIFICATION_ATTEMPT_ERROR;
-	}
+    @Override
+    public void update(V newValue) {
+        throw MODIFICATION_ATTEMPT_ERROR;
+    }
 
-	@Override
-	public void clear() {
-		throw MODIFICATION_ATTEMPT_ERROR;
-	}
+    @Override
+    public void clear() {
+        throw MODIFICATION_ATTEMPT_ERROR;
+    }
 
-	public static <V> ImmutableValueState<V> createState(
-			final ValueStateDescriptor<V> stateDescriptor,
-			final byte[] serializedState) throws IOException {
-
-		final V state = KvStateSerializer.deserializeValue(
-				serializedState,
-				stateDescriptor.getSerializer());
-		return new ImmutableValueState<>(state);
-	}
+    @SuppressWarnings("unchecked")
+    public static <V, S extends State> S createState(
+            StateDescriptor<S, V> stateDescriptor, byte[] serializedState) throws IOException {
+        final V state =
+                KvStateSerializer.deserializeValue(
+                        serializedState, stateDescriptor.getSerializer());
+        return (S) new ImmutableValueState<>(state);
+    }
 }

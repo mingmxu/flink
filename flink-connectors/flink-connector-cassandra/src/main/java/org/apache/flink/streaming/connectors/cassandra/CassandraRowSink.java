@@ -19,24 +19,39 @@ package org.apache.flink.streaming.connectors.cassandra;
 
 import org.apache.flink.types.Row;
 
-/**
- * A SinkFunction to write Row records into a Cassandra table.
- */
+/** A SinkFunction to write Row records into a Cassandra table. */
 public class CassandraRowSink extends AbstractCassandraTupleSink<Row> {
 
-	private final int rowArity;
+    private final int rowArity;
 
-	public CassandraRowSink(int rowArity, String insertQuery, ClusterBuilder builder) {
-		super(insertQuery, builder);
-		this.rowArity = rowArity;
-	}
+    public CassandraRowSink(int rowArity, String insertQuery, ClusterBuilder builder) {
+        this(rowArity, insertQuery, builder, CassandraSinkBaseConfig.newBuilder().build());
+    }
 
-	@Override
-	protected Object[] extract(Row record) {
-		Object[] al = new Object[rowArity];
-		for (int i = 0; i < rowArity; i++) {
-			al[i] = record.getField(i);
-		}
-		return al;
-	}
+    CassandraRowSink(
+            int rowArity,
+            String insertQuery,
+            ClusterBuilder builder,
+            CassandraSinkBaseConfig config) {
+        this(rowArity, insertQuery, builder, config, new NoOpCassandraFailureHandler());
+    }
+
+    CassandraRowSink(
+            int rowArity,
+            String insertQuery,
+            ClusterBuilder builder,
+            CassandraSinkBaseConfig config,
+            CassandraFailureHandler failureHandler) {
+        super(insertQuery, builder, config, failureHandler);
+        this.rowArity = rowArity;
+    }
+
+    @Override
+    protected Object[] extract(Row record) {
+        Object[] al = new Object[rowArity];
+        for (int i = 0; i < rowArity; i++) {
+            al[i] = record.getField(i);
+        }
+        return al;
+    }
 }

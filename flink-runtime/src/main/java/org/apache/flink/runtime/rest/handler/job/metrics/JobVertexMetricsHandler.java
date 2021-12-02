@@ -33,38 +33,38 @@ import org.apache.flink.runtime.webmonitor.RestfulGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Handler that returns metrics given a {@link JobID} and {@link JobVertexID}.
  *
  * @see MetricStore#getTaskMetricStore(String, String)
  * @deprecated This class is subsumed by {@link SubtaskMetricsHandler} and is only kept for
- * backwards-compatibility.
+ *     backwards-compatibility.
  */
-public class JobVertexMetricsHandler extends AbstractMetricsHandler<JobVertexMetricsMessageParameters> {
+public class JobVertexMetricsHandler
+        extends AbstractMetricsHandler<JobVertexMetricsMessageParameters> {
 
-	public JobVertexMetricsHandler(
-			CompletableFuture<String> localRestAddress,
-			GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-			Time timeout,
-			Map<String, String> headers,
-			MetricFetcher metricFetcher) {
+    public JobVertexMetricsHandler(
+            GatewayRetriever<? extends RestfulGateway> leaderRetriever,
+            Time timeout,
+            Map<String, String> headers,
+            MetricFetcher metricFetcher) {
 
-		super(localRestAddress, leaderRetriever, timeout, headers,
-			JobVertexMetricsHeaders.getInstance(),
-			metricFetcher);
-	}
+        super(
+                leaderRetriever,
+                timeout,
+                headers,
+                JobVertexMetricsHeaders.getInstance(),
+                metricFetcher);
+    }
 
-	@Override
-	protected MetricStore.ComponentMetricStore getComponentMetricStore(
-			HandlerRequest<EmptyRequestBody, JobVertexMetricsMessageParameters> request,
-			MetricStore metricStore) {
+    @Override
+    protected MetricStore.ComponentMetricStore getComponentMetricStore(
+            HandlerRequest<EmptyRequestBody> request, MetricStore metricStore) {
 
-		final JobID jobId = request.getPathParameter(JobIDPathParameter.class);
-		final JobVertexID vertexId = request.getPathParameter(JobVertexIdPathParameter.class);
+        final JobID jobId = request.getPathParameter(JobIDPathParameter.class);
+        final JobVertexID vertexId = request.getPathParameter(JobVertexIdPathParameter.class);
 
-		return metricStore.getTaskMetricStore(jobId.toString(), vertexId.toString());
-	}
-
+        return metricStore.getTaskMetricStore(jobId.toString(), vertexId.toString());
+    }
 }

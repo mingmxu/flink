@@ -19,110 +19,73 @@
 package org.apache.flink.api.java.io;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.functions.util.PrintSinkOutputWriter;
 import org.apache.flink.api.common.io.RichOutputFormat;
 import org.apache.flink.configuration.Configuration;
 
-import java.io.PrintStream;
-
 /**
  * Output format that prints results into either stdout or stderr.
- * @param <T>
+ *
+ * <p>Four possible format options: {@code sinkIdentifier}:taskId> output <- {@code sinkIdentifier}
+ * provided, parallelism > 1 {@code sinkIdentifier}> output <- {@code sinkIdentifier} provided,
+ * parallelism == 1 taskId> output <- no {@code sinkIdentifier} provided, parallelism > 1 output <-
+ * no {@code sinkIdentifier} provided, parallelism == 1
+ *
+ * @param <T> Input record type
  */
 @PublicEvolving
 public class PrintingOutputFormat<T> extends RichOutputFormat<T> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private static final boolean STD_OUT = false;
-	private static final boolean STD_ERR = true;
+    private final PrintSinkOutputWriter<T> writer;
 
-	private String sinkIdentifier;
+    // --------------------------------------------------------------------------------------------
 
-	private boolean target;
+    /** Instantiates a printing output format that prints to standard out. */
+    public PrintingOutputFormat() {
+        writer = new PrintSinkOutputWriter<>(false);
+    }
 
-	private transient PrintStream stream;
+    /**
+     * Instantiates a printing output format that prints to standard out.
+     *
+     * @param stdErr True, if the format should print to standard error instead of standard out.
+     */
+    public PrintingOutputFormat(final boolean stdErr) {
+        writer = new PrintSinkOutputWriter<>(stdErr);
+    }
 
-	private transient String prefix;
+    /**
+     * Instantiates a printing output format that prints to standard out with a prefixed message.
+     *
+     * @param sinkIdentifier Message that is prefixed to the output of the value.
+     * @param stdErr True, if the format should print to standard error instead of standard out.
+     */
+    public PrintingOutputFormat(final String sinkIdentifier, final boolean stdErr) {
+        writer = new PrintSinkOutputWriter<>(sinkIdentifier, stdErr);
+    }
 
-	// --------------------------------------------------------------------------------------------
+    @Override
+    public void configure(Configuration parameters) {}
 
-	/**
-	 * Instantiates a printing output format that prints to standard out.
-	 */
-	public PrintingOutputFormat() {}
+    @Override
+    public void open(int taskNumber, int numTasks) {
+        writer.open(taskNumber, numTasks);
+    }
 
-	/**
-	 * Instantiates a printing output format that prints to standard out.
-	 *
-	 * @param stdErr True, if the format should print to standard error instead of standard out.
-	 */
-	public PrintingOutputFormat(boolean stdErr) {
-		this.target = stdErr;
-	}
+    @Override
+    public void writeRecord(T record) {
+        writer.write(record);
+    }
 
-	/**
-	 * Instantiates a printing output format that prints to standard out with a prefixed message.
-	 * @param sinkIdentifier Message that is prefixed to the output of the value.
-	 * @param stdErr True, if the format should print to standard error instead of standard out.
-	 */
-	public PrintingOutputFormat(String sinkIdentifier, boolean stdErr) {
-		this(stdErr);
-		this.sinkIdentifier = sinkIdentifier;
-	}
+    @Override
+    public void close() {}
 
-	public void setTargetToStandardOut() {
-		this.target = STD_OUT;
-	}
+    // --------------------------------------------------------------------------------------------
 
-	public void setTargetToStandardErr() {
-		this.target = STD_ERR;
-	}
-
-	@Override
-	public void configure(Configuration parameters) {}
-
-	@Override
-	public void open(int taskNumber, int numTasks) {
-		// get the target stream
-		this.stream = this.target == STD_OUT ? System.out : System.err;
-
-		/**
-		 * Four possible format options:
-		 *      sinkId:taskId> output  <- sink id provided, parallelism > 1
-		 *      sinkId> output         <- sink id provided, parallelism == 1
-		 *      taskId> output         <- no sink id provided, parallelism > 1
-		 *      output                 <- no sink id provided, parallelism == 1
-		 */
-		if (this.sinkIdentifier != null) {
-			this.prefix = this.sinkIdentifier;
-			if (numTasks > 1) {
-				this.prefix += ":" + (taskNumber + 1);
-			}
-			this.prefix += "> ";
-		} else if (numTasks > 1) {
-			this.prefix = (taskNumber + 1) + "> ";
-		} else {
-			this.prefix = "";
-		}
-
-	}
-
-	@Override
-	public void writeRecord(T record) {
-		this.stream.println(this.prefix + record.toString());
-	}
-
-	@Override
-	public void close() {
-		this.stream = null;
-		this.prefix = null;
-		this.sinkIdentifier = null;
-	}
-
-	// --------------------------------------------------------------------------------------------
-
-	@Override
-	public String toString() {
-		return "Print to " + (target == STD_OUT ? "System.out" : "System.err");
-	}
+    @Override
+    public String toString() {
+        return writer.toString();
+    }
 }

@@ -19,190 +19,136 @@
 
 package org.apache.flink.test.example.failing;
 
-import org.apache.flink.api.common.JobExecutionResult;
-import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.runtime.client.JobExecutionException;
-import org.apache.flink.runtime.client.JobSubmissionException;
+import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobGraphTestUtils;
 import org.apache.flink.runtime.jobgraph.JobVertex;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
+import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.TestLogger;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
 
-import java.util.Arrays;
-import java.util.Collection;
+import javax.annotation.Nonnull;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import java.io.IOException;
+import java.util.function.Predicate;
+
+import static org.apache.flink.test.util.TestUtils.submitJobAndWaitForResult;
 import static org.junit.Assert.fail;
 
-/**
- * Tests for failing job submissions.
- */
-@RunWith(Parameterized.class)
+/** Tests for failing job submissions. */
 public class JobSubmissionFailsITCase extends TestLogger {
 
-	private static final int NUM_SLOTS = 20;
+    private static final int NUM_TM = 2;
+    private static final int NUM_SLOTS = 20;
 
-	private static LocalFlinkMiniCluster cluster;
-	private static JobGraph workingJobGraph;
+    @ClassRule
+    public static final MiniClusterWithClientResource MINI_CLUSTER_RESOURCE =
+            new MiniClusterWithClientResource(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setConfiguration(getConfiguration())
+                            .setNumberTaskManagers(NUM_TM)
+                            .setNumberSlotsPerTaskManager(NUM_SLOTS / NUM_TM)
+                            .build());
 
-	@BeforeClass
-	public static void setup() {
-		try {
-			Configuration config = new Configuration();
-			config.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, 4L);
-			config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 2);
-			config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, NUM_SLOTS / 2);
+    private static Configuration getConfiguration() {
+        Configuration config = new Configuration();
+        config.set(TaskManagerOptions.MANAGED_MEMORY_SIZE, MemorySize.parse("4m"));
 
-			cluster = new LocalFlinkMiniCluster(config);
+        // to accommodate for 10 netty arenas (NUM_SLOTS / NUM_TM) x 16Mb
+        // (NettyBufferPool.ARENA_SIZE)
+        config.set(TaskManagerOptions.NETWORK_MEMORY_MIN, MemorySize.parse("256m"));
 
-			cluster.start();
+        return config;
+    }
 
-			final JobVertex jobVertex = new JobVertex("Working job vertex.");
-			jobVertex.setInvokableClass(NoOpInvokable.class);
-			workingJobGraph = new JobGraph("Working testing job", jobVertex);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+    private static JobGraph getWorkingJobGraph() {
+        return JobGraphTestUtils.singleNoOpJobGraph();
+    }
 
-	@AfterClass
-	public static void teardown() {
-		try {
-			cluster.stop();
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+    // --------------------------------------------------------------------------------------------
 
-	// --------------------------------------------------------------------------------------------
+    @Test
+    public void testExceptionInInitializeOnMaster() throws Exception {
+        final JobVertex failingJobVertex = new FailingJobVertex("Failing job vertex");
+        failingJobVertex.setInvokableClass(NoOpInvokable.class);
+        failingJobVertex.setParallelism(1);
 
-	private boolean detached;
+        final JobGraph failingJobGraph = JobGraphTestUtils.streamingJobGraph(failingJobVertex);
+        runJobSubmissionTest(
+                failingJobGraph,
+                e ->
+                        ExceptionUtils.findThrowable(
+                                        e,
+                                        candidate ->
+                                                "Test exception.".equals(candidate.getMessage()))
+                                .isPresent());
+    }
 
-	public JobSubmissionFailsITCase(boolean detached) {
-		this.detached = detached;
-	}
+    @Test
+    public void testSubmitEmptyJobGraph() throws Exception {
+        final JobGraph jobGraph = JobGraphTestUtils.emptyJobGraph();
+        runJobSubmissionTest(
+                jobGraph,
+                e ->
+                        ExceptionUtils.findThrowable(
+                                        e,
+                                        throwable ->
+                                                throwable.getMessage() != null
+                                                        && throwable.getMessage().contains("empty"))
+                                .isPresent());
+    }
 
-	@Parameterized.Parameters(name = "Detached mode = {0}")
-	public static Collection<Boolean[]> executionModes(){
-		return Arrays.asList(new Boolean[]{false},
-				new Boolean[]{true});
-	}
+    @Test
+    public void testMissingJarBlob() throws Exception {
+        final JobGraph jobGraph = getJobGraphWithMissingBlobKey();
+        runJobSubmissionTest(
+                jobGraph, e -> ExceptionUtils.findThrowable(e, IOException.class).isPresent());
+    }
 
-	// --------------------------------------------------------------------------------------------
+    private void runJobSubmissionTest(JobGraph jobGraph, Predicate<Exception> failurePredicate)
+            throws Exception {
+        ClusterClient<?> client = MINI_CLUSTER_RESOURCE.getClusterClient();
 
-	private JobExecutionResult submitJob(JobGraph jobGraph) throws Exception {
-		if (detached) {
-			cluster.submitJobDetached(jobGraph);
-			return null;
-		}
-		else {
-			return cluster.submitJobAndWait(jobGraph, false, TestingUtils.TESTING_DURATION());
-		}
-	}
+        try {
+            submitJobAndWaitForResult(client, jobGraph, getClass().getClassLoader());
+            fail("Job submission should have thrown an exception.");
+        } catch (Exception e) {
+            if (!failurePredicate.test(e)) {
+                throw e;
+            }
+        }
 
-	@Test
-	public void testExceptionInInitializeOnMaster() {
-		try {
-			final JobVertex failingJobVertex = new FailingJobVertex("Failing job vertex");
-			failingJobVertex.setInvokableClass(NoOpInvokable.class);
+        submitJobAndWaitForResult(client, getWorkingJobGraph(), getClass().getClassLoader());
+    }
 
-			final JobGraph failingJobGraph = new JobGraph("Failing testing job", failingJobVertex);
+    @Nonnull
+    private static JobGraph getJobGraphWithMissingBlobKey() {
+        final JobGraph jobGraph = getWorkingJobGraph();
+        jobGraph.addUserJarBlobKey(new PermanentBlobKey());
+        return jobGraph;
+    }
 
-			try {
-				submitJob(failingJobGraph);
-				fail("Expected JobExecutionException.");
-			}
-			catch (JobExecutionException e) {
-				assertEquals("Test exception.", e.getCause().getMessage());
-			}
-			catch (Throwable t) {
-				t.printStackTrace();
-				fail("Caught wrong exception of type " + t.getClass() + ".");
-			}
+    // --------------------------------------------------------------------------------------------
 
-			cluster.submitJobAndWait(workingJobGraph, false);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+    private static class FailingJobVertex extends JobVertex {
+        private static final long serialVersionUID = -6365291240199412135L;
 
-	@Test
-	public void testSubmitEmptyJobGraph() {
-		try {
-			final JobGraph jobGraph = new JobGraph("Testing job");
+        public FailingJobVertex(final String msg) {
+            super(msg);
+        }
 
-			try {
-				submitJob(jobGraph);
-				fail("Expected JobSubmissionException.");
-			}
-			catch (JobSubmissionException e) {
-				assertTrue(e.getMessage() != null && e.getMessage().contains("empty"));
-			}
-			catch (Throwable t) {
-				t.printStackTrace();
-				fail("Caught wrong exception of type " + t.getClass() + ".");
-			}
-
-			cluster.submitJobAndWait(workingJobGraph, false);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
-
-	@Test
-	public void testSubmitNullJobGraph() {
-		try {
-			try {
-				submitJob(null);
-				fail("Expected JobSubmissionException.");
-			}
-			catch (NullPointerException e) {
-				// yo!
-			}
-			catch (Throwable t) {
-				t.printStackTrace();
-				fail("Caught wrong exception of type " + t.getClass() + ".");
-			}
-
-			cluster.submitJobAndWait(workingJobGraph, false);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
-
-	// --------------------------------------------------------------------------------------------
-
-	private static class FailingJobVertex extends JobVertex {
-		private static final long serialVersionUID = -6365291240199412135L;
-
-		public FailingJobVertex(final String msg) {
-			super(msg);
-		}
-
-		@Override
-		public void initializeOnMaster(ClassLoader loader) throws Exception {
-			throw new Exception("Test exception.");
-		}
-	}
+        @Override
+        public void initializeOnMaster(ClassLoader loader) throws Exception {
+            throw new Exception("Test exception.");
+        }
+    }
 }

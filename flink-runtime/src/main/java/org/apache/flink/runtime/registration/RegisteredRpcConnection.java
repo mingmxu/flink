@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.registration;
 
-import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.runtime.rpc.RpcGateway;
 
 import org.slf4j.Logger;
@@ -27,161 +26,256 @@ import java.io.Serializable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /**
- * This utility class implements the basis of RPC connecting from one component to another component,
- * for example the RPC connection from TaskExecutor to ResourceManager.
- * This {@code RegisteredRpcConnection} implements registration and get target gateway.
+ * This utility class implements the basis of RPC connecting from one component to another
+ * component, for example the RPC connection from TaskExecutor to ResourceManager. This {@code
+ * RegisteredRpcConnection} implements registration and get target gateway.
  *
- * <p>The registration gives access to a future that is completed upon successful registration.
- * The RPC connection can be closed, for example when the target where it tries to register
- * at looses leader status.
+ * <p>The registration gives access to a future that is completed upon successful registration. The
+ * RPC connection can be closed, for example when the target where it tries to register loses leader
+ * status.
  *
  * @param <F> The type of the fencing token
  * @param <G> The type of the gateway to connect to.
  * @param <S> The type of the successful registration responses.
+ * @param <R> The type of the registration rejection responses.
  */
-public abstract class RegisteredRpcConnection<F extends Serializable, G extends RpcGateway, S extends RegistrationResponse.Success> {
+public abstract class RegisteredRpcConnection<
+        F extends Serializable,
+        G extends RpcGateway,
+        S extends RegistrationResponse.Success,
+        R extends RegistrationResponse.Rejection> {
 
-	/** The logger for all log messages of this class. */
-	protected final Logger log;
+    private static final AtomicReferenceFieldUpdater<RegisteredRpcConnection, RetryingRegistration>
+            REGISTRATION_UPDATER =
+                    AtomicReferenceFieldUpdater.newUpdater(
+                            RegisteredRpcConnection.class,
+                            RetryingRegistration.class,
+                            "pendingRegistration");
 
-	/** The fencing token fo the remote component. */
-	private final F fencingToken;
+    /** The logger for all log messages of this class. */
+    protected final Logger log;
 
-	/** The target component Address, for example the ResourceManager Address. */
-	private final String targetAddress;
+    /** The fencing token fo the remote component. */
+    private final F fencingToken;
 
-	/** Execution context to be used to execute the on complete action of the ResourceManagerRegistration. */
-	private final Executor executor;
+    /** The target component Address, for example the ResourceManager Address. */
+    private final String targetAddress;
 
-	/** The Registration of this RPC connection. */
-	private RetryingRegistration<F, G, S> pendingRegistration;
+    /**
+     * Execution context to be used to execute the on complete action of the
+     * ResourceManagerRegistration.
+     */
+    private final Executor executor;
 
-	/** The gateway to register, it's null until the registration is completed. */
-	private volatile G targetGateway;
+    /** The Registration of this RPC connection. */
+    private volatile RetryingRegistration<F, G, S, R> pendingRegistration;
 
-	/** Flag indicating that the RPC connection is closed. */
-	private volatile boolean closed;
+    /** The gateway to register, it's null until the registration is completed. */
+    private volatile G targetGateway;
 
-	// ------------------------------------------------------------------------
+    /** Flag indicating that the RPC connection is closed. */
+    private volatile boolean closed;
 
-	public RegisteredRpcConnection(Logger log, String targetAddress, F fencingToken, Executor executor) {
-		this.log = checkNotNull(log);
-		this.targetAddress = checkNotNull(targetAddress);
-		this.fencingToken = checkNotNull(fencingToken);
-		this.executor = checkNotNull(executor);
-	}
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
-	//  Life cycle
-	// ------------------------------------------------------------------------
+    public RegisteredRpcConnection(
+            Logger log, String targetAddress, F fencingToken, Executor executor) {
+        this.log = checkNotNull(log);
+        this.targetAddress = checkNotNull(targetAddress);
+        this.fencingToken = checkNotNull(fencingToken);
+        this.executor = checkNotNull(executor);
+    }
 
-	@SuppressWarnings("unchecked")
-	public void start() {
-		checkState(!closed, "The RPC connection is already closed");
-		checkState(!isConnected() && pendingRegistration == null, "The RPC connection is already started");
+    // ------------------------------------------------------------------------
+    //  Life cycle
+    // ------------------------------------------------------------------------
 
-		pendingRegistration = checkNotNull(generateRegistration());
-		pendingRegistration.startRegistration();
+    public void start() {
+        checkState(!closed, "The RPC connection is already closed");
+        checkState(
+                !isConnected() && pendingRegistration == null,
+                "The RPC connection is already started");
 
-		CompletableFuture<Tuple2<G, S>> future = pendingRegistration.getFuture();
+        final RetryingRegistration<F, G, S, R> newRegistration = createNewRegistration();
 
-		future.whenCompleteAsync(
-			(Tuple2<G, S> result, Throwable failure) -> {
-				if (failure != null) {
-					if (failure instanceof CancellationException) {
-						// we ignore cancellation exceptions because they originate from cancelling
-						// the RetryingRegistration
-						log.debug("Retrying registration towards {} was cancelled.", targetAddress);
-					} else {
-						// this future should only ever fail if there is a bug, not if the registration is declined
-						onRegistrationFailure(failure);
-					}
-				} else {
-					targetGateway = result.f0;
-					onRegistrationSuccess(result.f1);
-				}
-			}, executor);
-	}
+        if (REGISTRATION_UPDATER.compareAndSet(this, null, newRegistration)) {
+            newRegistration.startRegistration();
+        } else {
+            // concurrent start operation
+            newRegistration.cancel();
+        }
+    }
 
-	/**
-	 * This method generate a specific Registration, for example TaskExecutor Registration at the ResourceManager.
-	 */
-	protected abstract RetryingRegistration<F, G, S> generateRegistration();
+    /**
+     * Tries to reconnect to the {@link #targetAddress} by cancelling the pending registration and
+     * starting a new pending registration.
+     *
+     * @return {@code false} if the connection has been closed or a concurrent modification has
+     *     happened; otherwise {@code true}
+     */
+    public boolean tryReconnect() {
+        checkState(isConnected(), "Cannot reconnect to an unknown destination.");
 
-	/**
-	 * This method handle the Registration Response.
-	 */
-	protected abstract void onRegistrationSuccess(S success);
+        if (closed) {
+            return false;
+        } else {
+            final RetryingRegistration<F, G, S, R> currentPendingRegistration = pendingRegistration;
 
-	/**
-	 * This method handle the Registration failure.
-	 */
-	protected abstract void onRegistrationFailure(Throwable failure);
+            if (currentPendingRegistration != null) {
+                currentPendingRegistration.cancel();
+            }
 
-	/**
-	 * Close connection.
-	 */
-	public void close() {
-		closed = true;
+            final RetryingRegistration<F, G, S, R> newRegistration = createNewRegistration();
 
-		// make sure we do not keep re-trying forever
-		if (pendingRegistration != null) {
-			pendingRegistration.cancel();
-		}
-	}
+            if (REGISTRATION_UPDATER.compareAndSet(
+                    this, currentPendingRegistration, newRegistration)) {
+                newRegistration.startRegistration();
+            } else {
+                // concurrent modification
+                newRegistration.cancel();
+                return false;
+            }
 
-	public boolean isClosed() {
-		return closed;
-	}
+            // double check for concurrent close operations
+            if (closed) {
+                newRegistration.cancel();
 
-	// ------------------------------------------------------------------------
-	//  Properties
-	// ------------------------------------------------------------------------
+                return false;
+            } else {
+                return true;
+            }
+        }
+    }
 
-	public F getTargetLeaderId() {
-		return fencingToken;
-	}
+    /**
+     * This method generate a specific Registration, for example TaskExecutor Registration at the
+     * ResourceManager.
+     */
+    protected abstract RetryingRegistration<F, G, S, R> generateRegistration();
 
-	public String getTargetAddress() {
-		return targetAddress;
-	}
+    /** This method handle the Registration Response. */
+    protected abstract void onRegistrationSuccess(S success);
 
-	/**
-	 * Gets the RegisteredGateway. This returns null until the registration is completed.
-	 */
-	public G getTargetGateway() {
-		return targetGateway;
-	}
+    /**
+     * This method handles the Registration rejection.
+     *
+     * @param rejection rejection containing additional information about the rejection
+     */
+    protected abstract void onRegistrationRejection(R rejection);
 
-	public boolean isConnected() {
-		return targetGateway != null;
-	}
+    /** This method handle the Registration failure. */
+    protected abstract void onRegistrationFailure(Throwable failure);
 
-	// ------------------------------------------------------------------------
+    /** Close connection. */
+    public void close() {
+        closed = true;
 
-	@Override
-	public String toString() {
-		String connectionInfo = "(ADDRESS: " + targetAddress + " FENCINGTOKEN: " + fencingToken + ")";
+        // make sure we do not keep re-trying forever
+        if (pendingRegistration != null) {
+            pendingRegistration.cancel();
+        }
+    }
 
-		if (isConnected()) {
-			connectionInfo = "RPC connection to " + targetGateway.getClass().getSimpleName() + " " + connectionInfo;
-		} else {
-			connectionInfo = "RPC connection to " + connectionInfo;
-		}
+    public boolean isClosed() {
+        return closed;
+    }
 
-		if (isClosed()) {
-			connectionInfo = connectionInfo + " is closed";
-		} else if (isConnected()){
-			connectionInfo = connectionInfo + " is established";
-		} else {
-			connectionInfo = connectionInfo + " is connecting";
-		}
+    // ------------------------------------------------------------------------
+    //  Properties
+    // ------------------------------------------------------------------------
 
-		return connectionInfo;
-	}
+    public F getTargetLeaderId() {
+        return fencingToken;
+    }
+
+    public String getTargetAddress() {
+        return targetAddress;
+    }
+
+    /** Gets the RegisteredGateway. This returns null until the registration is completed. */
+    public G getTargetGateway() {
+        return targetGateway;
+    }
+
+    public boolean isConnected() {
+        return targetGateway != null;
+    }
+
+    // ------------------------------------------------------------------------
+
+    @Override
+    public String toString() {
+        String connectionInfo =
+                "(ADDRESS: " + targetAddress + " FENCINGTOKEN: " + fencingToken + ")";
+
+        if (isConnected()) {
+            connectionInfo =
+                    "RPC connection to "
+                            + targetGateway.getClass().getSimpleName()
+                            + " "
+                            + connectionInfo;
+        } else {
+            connectionInfo = "RPC connection to " + connectionInfo;
+        }
+
+        if (isClosed()) {
+            connectionInfo += " is closed";
+        } else if (isConnected()) {
+            connectionInfo += " is established";
+        } else {
+            connectionInfo += " is connecting";
+        }
+
+        return connectionInfo;
+    }
+
+    // ------------------------------------------------------------------------
+    //  Internal methods
+    // ------------------------------------------------------------------------
+
+    private RetryingRegistration<F, G, S, R> createNewRegistration() {
+        RetryingRegistration<F, G, S, R> newRegistration = checkNotNull(generateRegistration());
+
+        CompletableFuture<RetryingRegistration.RetryingRegistrationResult<G, S, R>> future =
+                newRegistration.getFuture();
+
+        future.whenCompleteAsync(
+                (RetryingRegistration.RetryingRegistrationResult<G, S, R> result,
+                        Throwable failure) -> {
+                    if (failure != null) {
+                        if (failure instanceof CancellationException) {
+                            // we ignore cancellation exceptions because they originate from
+                            // cancelling
+                            // the RetryingRegistration
+                            log.debug(
+                                    "Retrying registration towards {} was cancelled.",
+                                    targetAddress);
+                        } else {
+                            // this future should only ever fail if there is a bug, not if the
+                            // registration is declined
+                            onRegistrationFailure(failure);
+                        }
+                    } else {
+                        if (result.isSuccess()) {
+                            targetGateway = result.getGateway();
+                            onRegistrationSuccess(result.getSuccess());
+                        } else if (result.isRejection()) {
+                            onRegistrationRejection(result.getRejection());
+                        } else {
+                            throw new IllegalArgumentException(
+                                    String.format(
+                                            "Unknown retrying registration response: %s.", result));
+                        }
+                    }
+                },
+                executor);
+
+        return newRegistration;
+    }
 }

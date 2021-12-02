@@ -23,134 +23,172 @@ import org.apache.flink.runtime.checkpoint.AbstractCheckpointStats;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsCounts;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsHistory;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
-import org.apache.flink.runtime.checkpoint.CompletedCheckpointStatsSummary;
-import org.apache.flink.runtime.checkpoint.MinMaxAvgStats;
+import org.apache.flink.runtime.checkpoint.CompletedCheckpointStatsSummarySnapshot;
 import org.apache.flink.runtime.checkpoint.RestoredCheckpointStats;
 import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.RestHandlerException;
-import org.apache.flink.runtime.rest.handler.job.AbstractExecutionGraphHandler;
+import org.apache.flink.runtime.rest.handler.job.AbstractAccessExecutionGraphHandler;
 import org.apache.flink.runtime.rest.handler.legacy.ExecutionGraphCache;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
+import org.apache.flink.runtime.rest.messages.ErrorResponseBody;
+import org.apache.flink.runtime.rest.messages.JobIDPathParameter;
 import org.apache.flink.runtime.rest.messages.JobMessageParameters;
 import org.apache.flink.runtime.rest.messages.MessageHeaders;
+import org.apache.flink.runtime.rest.messages.ResponseBody;
 import org.apache.flink.runtime.rest.messages.checkpoints.CheckpointStatistics;
 import org.apache.flink.runtime.rest.messages.checkpoints.CheckpointingStatistics;
-import org.apache.flink.runtime.rest.messages.checkpoints.MinMaxAvgStatistics;
+import org.apache.flink.runtime.rest.messages.checkpoints.StatsSummaryDto;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
+import org.apache.flink.runtime.webmonitor.history.ArchivedJson;
+import org.apache.flink.runtime.webmonitor.history.OnlyExecutionGraphJsonArchivist;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
-/**
- * Handler which serves the checkpoint statistics.
- */
-public class CheckpointingStatisticsHandler extends AbstractExecutionGraphHandler<CheckpointingStatistics, JobMessageParameters> {
+/** Handler which serves the checkpoint statistics. */
+public class CheckpointingStatisticsHandler
+        extends AbstractAccessExecutionGraphHandler<CheckpointingStatistics, JobMessageParameters>
+        implements OnlyExecutionGraphJsonArchivist {
 
-	public CheckpointingStatisticsHandler(
-			CompletableFuture<String> localRestAddress,
-			GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-			Time timeout,
-			Map<String, String> responseHeaders,
-			MessageHeaders<EmptyRequestBody, CheckpointingStatistics, JobMessageParameters> messageHeaders,
-			ExecutionGraphCache executionGraphCache,
-			Executor executor) {
-		super(localRestAddress, leaderRetriever, timeout, responseHeaders, messageHeaders, executionGraphCache, executor);
-	}
+    public CheckpointingStatisticsHandler(
+            GatewayRetriever<? extends RestfulGateway> leaderRetriever,
+            Time timeout,
+            Map<String, String> responseHeaders,
+            MessageHeaders<EmptyRequestBody, CheckpointingStatistics, JobMessageParameters>
+                    messageHeaders,
+            ExecutionGraphCache executionGraphCache,
+            Executor executor) {
+        super(
+                leaderRetriever,
+                timeout,
+                responseHeaders,
+                messageHeaders,
+                executionGraphCache,
+                executor);
+    }
 
-	@Override
-	protected CheckpointingStatistics handleRequest(HandlerRequest<EmptyRequestBody, JobMessageParameters> request, AccessExecutionGraph executionGraph) throws RestHandlerException {
+    @Override
+    protected CheckpointingStatistics handleRequest(
+            HandlerRequest<EmptyRequestBody> request, AccessExecutionGraph executionGraph)
+            throws RestHandlerException {
+        return createCheckpointingStatistics(executionGraph);
+    }
 
-		final CheckpointStatsSnapshot checkpointStatsSnapshot = executionGraph.getCheckpointStatsSnapshot();
+    @Override
+    public Collection<ArchivedJson> archiveJsonWithPath(AccessExecutionGraph graph)
+            throws IOException {
+        ResponseBody json;
+        try {
+            json = createCheckpointingStatistics(graph);
+        } catch (RestHandlerException rhe) {
+            json = new ErrorResponseBody(rhe.getMessage());
+        }
+        String path =
+                getMessageHeaders()
+                        .getTargetRestEndpointURL()
+                        .replace(':' + JobIDPathParameter.KEY, graph.getJobID().toString());
+        return Collections.singletonList(new ArchivedJson(path, json));
+    }
 
-		if (checkpointStatsSnapshot == null) {
-			throw new RestHandlerException("Checkpointing has not been enabled.", HttpResponseStatus.NOT_FOUND);
-		} else {
-			final CheckpointStatsCounts checkpointStatsCounts = checkpointStatsSnapshot.getCounts();
+    private static CheckpointingStatistics createCheckpointingStatistics(
+            AccessExecutionGraph executionGraph) throws RestHandlerException {
+        final CheckpointStatsSnapshot checkpointStatsSnapshot =
+                executionGraph.getCheckpointStatsSnapshot();
 
-			final CheckpointingStatistics.Counts counts = new CheckpointingStatistics.Counts(
-				checkpointStatsCounts.getNumberOfRestoredCheckpoints(),
-				checkpointStatsCounts.getTotalNumberOfCheckpoints(),
-				checkpointStatsCounts.getNumberOfInProgressCheckpoints(),
-				checkpointStatsCounts.getNumberOfCompletedCheckpoints(),
-				checkpointStatsCounts.getNumberOfFailedCheckpoints());
+        if (checkpointStatsSnapshot == null) {
+            throw new RestHandlerException(
+                    "Checkpointing has not been enabled.",
+                    HttpResponseStatus.NOT_FOUND,
+                    RestHandlerException.LoggingBehavior.IGNORE);
+        } else {
+            final CheckpointStatsCounts checkpointStatsCounts = checkpointStatsSnapshot.getCounts();
 
-			final CompletedCheckpointStatsSummary checkpointStatsSummary = checkpointStatsSnapshot.getSummaryStats();
-			final MinMaxAvgStats stateSize = checkpointStatsSummary.getStateSizeStats();
-			final MinMaxAvgStats duration = checkpointStatsSummary.getEndToEndDurationStats();
-			final MinMaxAvgStats alignment = checkpointStatsSummary.getAlignmentBufferedStats();
+            final CheckpointingStatistics.Counts counts =
+                    new CheckpointingStatistics.Counts(
+                            checkpointStatsCounts.getNumberOfRestoredCheckpoints(),
+                            checkpointStatsCounts.getTotalNumberOfCheckpoints(),
+                            checkpointStatsCounts.getNumberOfInProgressCheckpoints(),
+                            checkpointStatsCounts.getNumberOfCompletedCheckpoints(),
+                            checkpointStatsCounts.getNumberOfFailedCheckpoints());
 
-			final CheckpointingStatistics.Summary summary = new CheckpointingStatistics.Summary(
-				new MinMaxAvgStatistics(
-					stateSize.getMinimum(),
-					stateSize.getMaximum(),
-					stateSize.getAverage()),
-				new MinMaxAvgStatistics(
-					duration.getMinimum(),
-					duration.getMaximum(),
-					duration.getAverage()),
-				new MinMaxAvgStatistics(
-					alignment.getMinimum(),
-					alignment.getMaximum(),
-					alignment.getAverage()));
+            final CompletedCheckpointStatsSummarySnapshot checkpointStatsSummary =
+                    checkpointStatsSnapshot.getSummaryStats();
 
-			final CheckpointStatsHistory checkpointStatsHistory = checkpointStatsSnapshot.getHistory();
+            final CheckpointingStatistics.Summary summary =
+                    new CheckpointingStatistics.Summary(
+                            StatsSummaryDto.valueOf(checkpointStatsSummary.getStateSizeStats()),
+                            StatsSummaryDto.valueOf(
+                                    checkpointStatsSummary.getEndToEndDurationStats()),
+                            new StatsSummaryDto(0, 0, 0, 0, 0, 0, 0, 0),
+                            StatsSummaryDto.valueOf(checkpointStatsSummary.getProcessedDataStats()),
+                            StatsSummaryDto.valueOf(
+                                    checkpointStatsSummary.getPersistedDataStats()));
 
-			final CheckpointStatistics.CompletedCheckpointStatistics completed = checkpointStatsHistory.getLatestCompletedCheckpoint() != null ?
-				(CheckpointStatistics.CompletedCheckpointStatistics) CheckpointStatistics.generateCheckpointStatistics(
-					checkpointStatsHistory.getLatestCompletedCheckpoint(),
-					false) :
-				null;
+            final CheckpointStatsHistory checkpointStatsHistory =
+                    checkpointStatsSnapshot.getHistory();
 
-			final CheckpointStatistics.CompletedCheckpointStatistics savepoint = checkpointStatsHistory.getLatestSavepoint() != null ?
-				(CheckpointStatistics.CompletedCheckpointStatistics) CheckpointStatistics.generateCheckpointStatistics(
-					checkpointStatsHistory.getLatestSavepoint(),
-					false) :
-				null;
+            final CheckpointStatistics.CompletedCheckpointStatistics completed =
+                    checkpointStatsHistory.getLatestCompletedCheckpoint() != null
+                            ? (CheckpointStatistics.CompletedCheckpointStatistics)
+                                    CheckpointStatistics.generateCheckpointStatistics(
+                                            checkpointStatsHistory.getLatestCompletedCheckpoint(),
+                                            false)
+                            : null;
 
-			final CheckpointStatistics.FailedCheckpointStatistics failed = checkpointStatsHistory.getLatestFailedCheckpoint() != null ?
-				(CheckpointStatistics.FailedCheckpointStatistics) CheckpointStatistics.generateCheckpointStatistics(
-					checkpointStatsHistory.getLatestFailedCheckpoint(),
-					false) :
-				null;
+            final CheckpointStatistics.CompletedCheckpointStatistics savepoint =
+                    checkpointStatsHistory.getLatestSavepoint() != null
+                            ? (CheckpointStatistics.CompletedCheckpointStatistics)
+                                    CheckpointStatistics.generateCheckpointStatistics(
+                                            checkpointStatsHistory.getLatestSavepoint(), false)
+                            : null;
 
-			final RestoredCheckpointStats restoredCheckpointStats = checkpointStatsSnapshot.getLatestRestoredCheckpoint();
+            final CheckpointStatistics.FailedCheckpointStatistics failed =
+                    checkpointStatsHistory.getLatestFailedCheckpoint() != null
+                            ? (CheckpointStatistics.FailedCheckpointStatistics)
+                                    CheckpointStatistics.generateCheckpointStatistics(
+                                            checkpointStatsHistory.getLatestFailedCheckpoint(),
+                                            false)
+                            : null;
 
-			final CheckpointingStatistics.RestoredCheckpointStatistics restored;
+            final RestoredCheckpointStats restoredCheckpointStats =
+                    checkpointStatsSnapshot.getLatestRestoredCheckpoint();
 
-			if (restoredCheckpointStats == null) {
-				restored = null;
-			} else {
-				restored = new CheckpointingStatistics.RestoredCheckpointStatistics(
-					restoredCheckpointStats.getCheckpointId(),
-					restoredCheckpointStats.getRestoreTimestamp(),
-					restoredCheckpointStats.getProperties().isSavepoint(),
-					restoredCheckpointStats.getExternalPath());
-			}
+            final CheckpointingStatistics.RestoredCheckpointStatistics restored;
 
-			final CheckpointingStatistics.LatestCheckpoints latestCheckpoints = new CheckpointingStatistics.LatestCheckpoints(
-				completed,
-				savepoint,
-				failed,
-				restored);
+            if (restoredCheckpointStats == null) {
+                restored = null;
+            } else {
+                restored =
+                        new CheckpointingStatistics.RestoredCheckpointStatistics(
+                                restoredCheckpointStats.getCheckpointId(),
+                                restoredCheckpointStats.getRestoreTimestamp(),
+                                restoredCheckpointStats.getProperties().isSavepoint(),
+                                restoredCheckpointStats.getExternalPath());
+            }
 
-			final List<CheckpointStatistics> history = new ArrayList<>(16);
+            final CheckpointingStatistics.LatestCheckpoints latestCheckpoints =
+                    new CheckpointingStatistics.LatestCheckpoints(
+                            completed, savepoint, failed, restored);
 
-			for (AbstractCheckpointStats abstractCheckpointStats : checkpointStatsSnapshot.getHistory().getCheckpoints()) {
-				history.add(CheckpointStatistics.generateCheckpointStatistics(abstractCheckpointStats, false));
-			}
+            final List<CheckpointStatistics> history = new ArrayList<>(16);
 
-			return new CheckpointingStatistics(
-				counts,
-				summary,
-				latestCheckpoints,
-				history);
-		}
-	}
+            for (AbstractCheckpointStats abstractCheckpointStats :
+                    checkpointStatsSnapshot.getHistory().getCheckpoints()) {
+                history.add(
+                        CheckpointStatistics.generateCheckpointStatistics(
+                                abstractCheckpointStats, false));
+            }
+
+            return new CheckpointingStatistics(counts, summary, latestCheckpoints, history);
+        }
+    }
 }

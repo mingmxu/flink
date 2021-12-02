@@ -22,109 +22,114 @@ import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.util.Preconditions;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.io.InvalidClassException;
 import java.util.Arrays;
 
 /**
- * Dummy TypeSerializer to avoid that data is lost when checkpointing again a serializer for which we encountered
- * a {@link ClassNotFoundException} or {@link InvalidClassException}.
+ * Dummy TypeSerializer to avoid that data is lost when checkpointing again a serializer for which
+ * we encountered a {@link ClassNotFoundException} or {@link InvalidClassException}.
  */
 public class UnloadableDummyTypeSerializer<T> extends TypeSerializer<T> {
 
-	private static final long serialVersionUID = 2526330533671642711L;
-	private final byte[] actualBytes;
+    private static final long serialVersionUID = 2526330533671642711L;
 
-	public UnloadableDummyTypeSerializer(byte[] actualBytes) {
-		this.actualBytes = Preconditions.checkNotNull(actualBytes);
-	}
+    private final byte[] actualBytes;
 
-	public byte[] getActualBytes() {
-		return actualBytes;
-	}
+    @Nullable private final Throwable originalError;
 
-	@Override
-	public boolean isImmutableType() {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    public UnloadableDummyTypeSerializer(byte[] actualBytes) {
+        this(actualBytes, null);
+    }
 
-	@Override
-	public TypeSerializer<T> duplicate() {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    public UnloadableDummyTypeSerializer(byte[] actualBytes, @Nullable Throwable originalError) {
+        this.actualBytes = Preconditions.checkNotNull(actualBytes);
+        this.originalError = originalError;
+    }
 
-	@Override
-	public T createInstance() {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    public byte[] getActualBytes() {
+        return actualBytes;
+    }
 
-	@Override
-	public T copy(T from) {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Nullable
+    public Throwable getOriginalError() {
+        return originalError;
+    }
 
-	@Override
-	public T copy(T from, T reuse) {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public boolean isImmutableType() {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public int getLength() {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public TypeSerializer<T> duplicate() {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public void serialize(T record, DataOutputView target) throws IOException {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public T createInstance() {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public T deserialize(DataInputView source) throws IOException {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public T copy(T from) {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public T deserialize(T reuse, DataInputView source) throws IOException {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public T copy(T from, T reuse) {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public void copy(DataInputView source, DataOutputView target) throws IOException {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public int getLength() {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public TypeSerializerConfigSnapshot snapshotConfiguration() {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public void serialize(T record, DataOutputView target) throws IOException {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public CompatibilityResult<T> ensureCompatibility(TypeSerializerConfigSnapshot configSnapshot) {
-		throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
-	}
+    @Override
+    public T deserialize(DataInputView source) throws IOException {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public boolean canEqual(Object obj) {
-		return false;
-	}
+    @Override
+    public T deserialize(T reuse, DataInputView source) throws IOException {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
+    @Override
+    public void copy(DataInputView source, DataOutputView target) throws IOException {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-		if (o == null || getClass() != o.getClass()) {
-			return false;
-		}
+    @Override
+    public TypeSerializerSnapshot<T> snapshotConfiguration() {
+        throw new UnsupportedOperationException("This object is a dummy TypeSerializer.");
+    }
 
-		UnloadableDummyTypeSerializer<?> that = (UnloadableDummyTypeSerializer<?>) o;
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
 
-		return Arrays.equals(getActualBytes(), that.getActualBytes());
-	}
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
 
-	@Override
-	public int hashCode() {
-		return Arrays.hashCode(getActualBytes());
-	}
+        UnloadableDummyTypeSerializer<?> that = (UnloadableDummyTypeSerializer<?>) o;
+
+        return Arrays.equals(getActualBytes(), that.getActualBytes());
+    }
+
+    @Override
+    public int hashCode() {
+        return Arrays.hashCode(getActualBytes());
+    }
 }

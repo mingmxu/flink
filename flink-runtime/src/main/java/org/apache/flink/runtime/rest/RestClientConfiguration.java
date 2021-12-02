@@ -19,63 +19,105 @@
 package org.apache.flink.runtime.rest;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.SecurityOptions;
+import org.apache.flink.runtime.io.network.netty.SSLHandlerFactory;
 import org.apache.flink.runtime.net.SSLUtils;
 import org.apache.flink.util.ConfigurationException;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 
-/**
- * A configuration object for {@link RestClient}s.
- */
+import static org.apache.flink.util.Preconditions.checkArgument;
+
+/** A configuration object for {@link RestClient}s. */
 public final class RestClientConfiguration {
 
-	@Nullable
-	private final SSLEngine sslEngine;
+    @Nullable private final SSLHandlerFactory sslHandlerFactory;
 
-	private RestClientConfiguration(@Nullable SSLEngine sslEngine) {
-		this.sslEngine = sslEngine;
-	}
+    private final long connectionTimeout;
 
-	/**
-	 * Returns the {@link SSLEngine} that the REST client endpoint should use.
-	 *
-	 * @return SSLEngine that the REST client endpoint should use, or null if SSL was disabled
-	 */
+    private final long idlenessTimeout;
 
-	public SSLEngine getSslEngine() {
-		return sslEngine;
-	}
+    private final int maxContentLength;
 
-	/**
-	 * Creates and returns a new {@link RestClientConfiguration} from the given {@link Configuration}.
-	 *
-	 * @param config configuration from which the REST client endpoint configuration should be created from
-	 * @return REST client endpoint configuration
-	 * @throws ConfigurationException if SSL was configured incorrectly
-	 */
+    private RestClientConfiguration(
+            @Nullable final SSLHandlerFactory sslHandlerFactory,
+            final long connectionTimeout,
+            final long idlenessTimeout,
+            final int maxContentLength) {
+        checkArgument(
+                maxContentLength > 0,
+                "maxContentLength must be positive, was: %s",
+                maxContentLength);
+        this.sslHandlerFactory = sslHandlerFactory;
+        this.connectionTimeout = connectionTimeout;
+        this.idlenessTimeout = idlenessTimeout;
+        this.maxContentLength = maxContentLength;
+    }
 
-	public static RestClientConfiguration fromConfiguration(Configuration config) throws ConfigurationException {
-		Preconditions.checkNotNull(config);
+    /**
+     * Returns the {@link SSLEngine} that the REST client endpoint should use.
+     *
+     * @return SSLEngine that the REST client endpoint should use, or null if SSL was disabled
+     */
+    @Nullable
+    public SSLHandlerFactory getSslHandlerFactory() {
+        return sslHandlerFactory;
+    }
 
-		SSLEngine sslEngine = null;
-		boolean enableSSL = config.getBoolean(SecurityOptions.SSL_ENABLED);
-		if (enableSSL) {
-			try {
-				SSLContext sslContext = SSLUtils.createSSLServerContext(config);
-				if (sslContext != null) {
-					sslEngine = sslContext.createSSLEngine();
-					SSLUtils.setSSLVerAndCipherSuites(sslEngine, config);
-					sslEngine.setUseClientMode(false);
-				}
-			} catch (Exception e) {
-				throw new ConfigurationException("Failed to initialize SSLContext for the web frontend", e);
-			}
-		}
+    /** {@see RestOptions#CONNECTION_TIMEOUT}. */
+    public long getConnectionTimeout() {
+        return connectionTimeout;
+    }
 
-		return new RestClientConfiguration(sslEngine);
-	}
+    /** {@see RestOptions#IDLENESS_TIMEOUT}. */
+    public long getIdlenessTimeout() {
+        return idlenessTimeout;
+    }
+
+    /**
+     * Returns the max content length that the REST client endpoint could handle.
+     *
+     * @return max content length that the REST client endpoint could handle
+     */
+    public int getMaxContentLength() {
+        return maxContentLength;
+    }
+
+    /**
+     * Creates and returns a new {@link RestClientConfiguration} from the given {@link
+     * Configuration}.
+     *
+     * @param config configuration from which the REST client endpoint configuration should be
+     *     created from
+     * @return REST client endpoint configuration
+     * @throws ConfigurationException if SSL was configured incorrectly
+     */
+    public static RestClientConfiguration fromConfiguration(Configuration config)
+            throws ConfigurationException {
+        Preconditions.checkNotNull(config);
+
+        final SSLHandlerFactory sslHandlerFactory;
+        if (SecurityOptions.isRestSSLEnabled(config)) {
+            try {
+                sslHandlerFactory = SSLUtils.createRestClientSSLEngineFactory(config);
+            } catch (Exception e) {
+                throw new ConfigurationException(
+                        "Failed to initialize SSLContext for the REST client", e);
+            }
+        } else {
+            sslHandlerFactory = null;
+        }
+
+        final long connectionTimeout = config.getLong(RestOptions.CONNECTION_TIMEOUT);
+
+        final long idlenessTimeout = config.getLong(RestOptions.IDLENESS_TIMEOUT);
+
+        int maxContentLength = config.getInteger(RestOptions.CLIENT_MAX_CONTENT_LENGTH);
+
+        return new RestClientConfiguration(
+                sslHandlerFactory, connectionTimeout, idlenessTimeout, maxContentLength);
+    }
 }

@@ -17,359 +17,308 @@
 
 package org.apache.flink.streaming.runtime.tasks;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.util.Preconditions;
+import org.apache.flink.api.common.time.Deadline;
+import org.apache.flink.util.concurrent.NeverCompleteFuture;
 
-import javax.annotation.Nonnull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CancellationException;
-import java.util.concurrent.Delayed;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * A {@link ProcessingTimeService} which assigns as current processing time the result of calling
- * {@link System#currentTimeMillis()} and registers timers using a {@link ScheduledThreadPoolExecutor}.
+ * A {@link TimerService} which assigns as current processing time the result of calling {@link
+ * System#currentTimeMillis()} and registers timers using a {@link ScheduledThreadPoolExecutor}.
  */
-public class SystemProcessingTimeService extends ProcessingTimeService {
+@Internal
+public class SystemProcessingTimeService implements TimerService {
 
-	private static final int STATUS_ALIVE = 0;
-	private static final int STATUS_QUIESCED = 1;
-	private static final int STATUS_SHUTDOWN = 2;
+    private static final Logger LOG = LoggerFactory.getLogger(SystemProcessingTimeService.class);
 
-	// ------------------------------------------------------------------------
+    private static final int STATUS_ALIVE = 0;
+    private static final int STATUS_QUIESCED = 1;
+    private static final int STATUS_SHUTDOWN = 2;
 
-	/** The containing task that owns this time service provider. */
-	private final AsyncExceptionHandler task;
+    // ------------------------------------------------------------------------
 
-	/** The lock that timers acquire upon triggering. */
-	private final Object checkpointLock;
+    /** The executor service that schedules and calls the triggers of this task. */
+    private final ScheduledThreadPoolExecutor timerService;
 
-	/** The executor service that schedules and calls the triggers of this task. */
-	private final ScheduledThreadPoolExecutor timerService;
+    private final ExceptionHandler exceptionHandler;
+    private final AtomicInteger status;
 
-	private final AtomicInteger status;
+    private final CompletableFuture<Void> quiesceCompletedFuture;
 
-	public SystemProcessingTimeService(AsyncExceptionHandler failureHandler, Object checkpointLock) {
-		this(failureHandler, checkpointLock, null);
-	}
+    @VisibleForTesting
+    SystemProcessingTimeService(ExceptionHandler exceptionHandler) {
+        this(exceptionHandler, null);
+    }
 
-	public SystemProcessingTimeService(
-			AsyncExceptionHandler task,
-			Object checkpointLock,
-			ThreadFactory threadFactory) {
+    SystemProcessingTimeService(ExceptionHandler exceptionHandler, ThreadFactory threadFactory) {
 
-		this.task = checkNotNull(task);
-		this.checkpointLock = checkNotNull(checkpointLock);
+        this.exceptionHandler = checkNotNull(exceptionHandler);
+        this.status = new AtomicInteger(STATUS_ALIVE);
+        this.quiesceCompletedFuture = new CompletableFuture<>();
 
-		this.status = new AtomicInteger(STATUS_ALIVE);
+        if (threadFactory == null) {
+            this.timerService = new ScheduledTaskExecutor(1);
+        } else {
+            this.timerService = new ScheduledTaskExecutor(1, threadFactory);
+        }
 
-		if (threadFactory == null) {
-			this.timerService = new ScheduledThreadPoolExecutor(1);
-		} else {
-			this.timerService = new ScheduledThreadPoolExecutor(1, threadFactory);
-		}
+        // tasks should be removed if the future is canceled
+        this.timerService.setRemoveOnCancelPolicy(true);
 
-		// tasks should be removed if the future is canceled
-		this.timerService.setRemoveOnCancelPolicy(true);
+        // make sure shutdown removes all pending tasks
+        this.timerService.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
+        this.timerService.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+    }
 
-		// make sure shutdown removes all pending tasks
-		this.timerService.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
-		this.timerService.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
-	}
+    @Override
+    public long getCurrentProcessingTime() {
+        return System.currentTimeMillis();
+    }
 
-	@Override
-	public long getCurrentProcessingTime() {
-		return System.currentTimeMillis();
-	}
+    /**
+     * Registers a task to be executed no sooner than time {@code timestamp}, but without strong
+     * guarantees of order.
+     *
+     * @param timestamp Time when the task is to be enabled (in processing time)
+     * @param callback The task to be executed
+     * @return The future that represents the scheduled task. This always returns some future, even
+     *     if the timer was shut down
+     */
+    @Override
+    public ScheduledFuture<?> registerTimer(long timestamp, ProcessingTimeCallback callback) {
 
-	/**
-	 * Registers a task to be executed no sooner than time {@code timestamp}, but without strong
-	 * guarantees of order.
-	 *
-	 * @param timestamp Time when the task is to be enabled (in processing time)
-	 * @param target    The task to be executed
-	 * @return The future that represents the scheduled task. This always returns some future,
-	 *         even if the timer was shut down
-	 */
-	@Override
-	public ScheduledFuture<?> registerTimer(long timestamp, ProcessingTimeCallback target) {
-		long delay = Math.max(timestamp - getCurrentProcessingTime(), 0);
+        long delay =
+                ProcessingTimeServiceUtil.getProcessingTimeDelay(
+                        timestamp, getCurrentProcessingTime());
 
-		// we directly try to register the timer and only react to the status on exception
-		// that way we save unnecessary volatile accesses for each timer
-		try {
-			return timerService.schedule(
-					new TriggerTask(status, task, checkpointLock, target, timestamp), delay, TimeUnit.MILLISECONDS);
-		}
-		catch (RejectedExecutionException e) {
-			final int status = this.status.get();
-			if (status == STATUS_QUIESCED) {
-				return new NeverCompleteFuture(delay);
-			}
-			else if (status == STATUS_SHUTDOWN) {
-				throw new IllegalStateException("Timer service is shut down");
-			}
-			else {
-				// something else happened, so propagate the exception
-				throw e;
-			}
-		}
-	}
+        // we directly try to register the timer and only react to the status on exception
+        // that way we save unnecessary volatile accesses for each timer
+        try {
+            return timerService.schedule(
+                    wrapOnTimerCallback(callback, timestamp), delay, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            final int status = this.status.get();
+            if (status == STATUS_QUIESCED) {
+                return new NeverCompleteFuture(delay);
+            } else if (status == STATUS_SHUTDOWN) {
+                throw new IllegalStateException("Timer service is shut down");
+            } else {
+                // something else happened, so propagate the exception
+                throw e;
+            }
+        }
+    }
 
-	@Override
-	public ScheduledFuture<?> scheduleAtFixedRate(ProcessingTimeCallback callback, long initialDelay, long period) {
-		long nextTimestamp = getCurrentProcessingTime() + initialDelay;
+    @Override
+    public ScheduledFuture<?> scheduleAtFixedRate(
+            ProcessingTimeCallback callback, long initialDelay, long period) {
+        return scheduleRepeatedly(callback, initialDelay, period, false);
+    }
 
-		// we directly try to register the timer and only react to the status on exception
-		// that way we save unnecessary volatile accesses for each timer
-		try {
-			return timerService.scheduleAtFixedRate(
-				new RepeatedTriggerTask(status, task, checkpointLock, callback, nextTimestamp, period),
-				initialDelay,
-				period,
-				TimeUnit.MILLISECONDS);
-		} catch (RejectedExecutionException e) {
-			final int status = this.status.get();
-			if (status == STATUS_QUIESCED) {
-				return new NeverCompleteFuture(initialDelay);
-			}
-			else if (status == STATUS_SHUTDOWN) {
-				throw new IllegalStateException("Timer service is shut down");
-			}
-			else {
-				// something else happened, so propagate the exception
-				throw e;
-			}
-		}
-	}
+    @Override
+    public ScheduledFuture<?> scheduleWithFixedDelay(
+            ProcessingTimeCallback callback, long initialDelay, long period) {
+        return scheduleRepeatedly(callback, initialDelay, period, true);
+    }
 
-	/**
-	 * @return {@code true} is the status of the service
-	 * is {@link #STATUS_ALIVE}, {@code false} otherwise.
-	 */
-	@VisibleForTesting
-	boolean isAlive() {
-		return status.get() == STATUS_ALIVE;
-	}
+    private ScheduledFuture<?> scheduleRepeatedly(
+            ProcessingTimeCallback callback, long initialDelay, long period, boolean fixedDelay) {
+        final long nextTimestamp = getCurrentProcessingTime() + initialDelay;
+        final Runnable task = wrapOnTimerCallback(callback, nextTimestamp, period);
 
-	@Override
-	public boolean isTerminated() {
-		return status.get() == STATUS_SHUTDOWN;
-	}
+        // we directly try to register the timer and only react to the status on exception
+        // that way we save unnecessary volatile accesses for each timer
+        try {
+            return fixedDelay
+                    ? timerService.scheduleWithFixedDelay(
+                            task, initialDelay, period, TimeUnit.MILLISECONDS)
+                    : timerService.scheduleAtFixedRate(
+                            task, initialDelay, period, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            final int status = this.status.get();
+            if (status == STATUS_QUIESCED) {
+                return new NeverCompleteFuture(initialDelay);
+            } else if (status == STATUS_SHUTDOWN) {
+                throw new IllegalStateException("Timer service is shut down");
+            } else {
+                // something else happened, so propagate the exception
+                throw e;
+            }
+        }
+    }
 
-	@Override
-	public void quiesce() throws InterruptedException {
-		if (status.compareAndSet(STATUS_ALIVE, STATUS_QUIESCED)) {
-			timerService.shutdown();
-		}
-	}
+    /**
+     * @return {@code true} is the status of the service is {@link #STATUS_ALIVE}, {@code false}
+     *     otherwise.
+     */
+    @VisibleForTesting
+    boolean isAlive() {
+        return status.get() == STATUS_ALIVE;
+    }
 
-	@Override
-	public void awaitPendingAfterQuiesce() throws InterruptedException {
-		if (!timerService.isTerminated()) {
-			Preconditions.checkState(timerService.isTerminating() || timerService.isShutdown());
+    @Override
+    public boolean isTerminated() {
+        return status.get() == STATUS_SHUTDOWN;
+    }
 
-			// await forever (almost)
-			timerService.awaitTermination(365L, TimeUnit.DAYS);
-		}
-	}
+    @Override
+    public CompletableFuture<Void> quiesce() {
+        if (status.compareAndSet(STATUS_ALIVE, STATUS_QUIESCED)) {
+            timerService.shutdown();
+        }
 
-	@Override
-	public void shutdownService() {
-		if (status.compareAndSet(STATUS_ALIVE, STATUS_SHUTDOWN) ||
-				status.compareAndSet(STATUS_QUIESCED, STATUS_SHUTDOWN)) {
-			timerService.shutdownNow();
-		}
-	}
+        return quiesceCompletedFuture;
+    }
 
-	@Override
-	public boolean shutdownAndAwaitPending(long time, TimeUnit timeUnit) throws InterruptedException {
-		shutdownService();
-		return timerService.awaitTermination(time, timeUnit);
-	}
+    @Override
+    public void shutdownService() {
+        if (status.compareAndSet(STATUS_ALIVE, STATUS_SHUTDOWN)
+                || status.compareAndSet(STATUS_QUIESCED, STATUS_SHUTDOWN)) {
+            timerService.shutdownNow();
+        }
+    }
 
-	// safety net to destroy the thread pool
-	@Override
-	protected void finalize() throws Throwable {
-		super.finalize();
-		timerService.shutdownNow();
-	}
+    /**
+     * Shuts down and clean up the timer service provider hard and immediately. This does wait for
+     * all timers to complete or until the time limit is exceeded. Any call to {@link
+     * #registerTimer(long, ProcessingTimeCallback)} will result in a hard exception after calling
+     * this method.
+     *
+     * @param time time to wait for termination.
+     * @param timeUnit time unit of parameter time.
+     * @return {@code true} if this timer service and all pending timers are terminated and {@code
+     *     false} if the timeout elapsed before this happened.
+     */
+    @VisibleForTesting
+    boolean shutdownAndAwaitPending(long time, TimeUnit timeUnit) throws InterruptedException {
+        shutdownService();
+        return timerService.awaitTermination(time, timeUnit);
+    }
 
-	@VisibleForTesting
-	int getNumTasksScheduled() {
-		BlockingQueue<?> queue = timerService.getQueue();
-		if (queue == null) {
-			return 0;
-		} else {
-			return queue.size();
-		}
-	}
+    @Override
+    public boolean shutdownServiceUninterruptible(long timeoutMs) {
 
-	// ------------------------------------------------------------------------
+        final Deadline deadline = Deadline.fromNow(Duration.ofMillis(timeoutMs));
 
-	/**
-	 * Internal task that is invoked by the timer service and triggers the target.
-	 */
-	private static final class TriggerTask implements Runnable {
+        boolean shutdownComplete = false;
+        boolean receivedInterrupt = false;
 
-		private final AtomicInteger serviceStatus;
-		private final Object lock;
-		private final ProcessingTimeCallback target;
-		private final long timestamp;
-		private final AsyncExceptionHandler exceptionHandler;
+        do {
+            try {
+                // wait for a reasonable time for all pending timer threads to finish
+                shutdownComplete =
+                        shutdownAndAwaitPending(
+                                deadline.timeLeft().toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException iex) {
+                receivedInterrupt = true;
+                LOG.trace("Intercepted attempt to interrupt timer service shutdown.", iex);
+            }
+        } while (deadline.hasTimeLeft() && !shutdownComplete);
 
-		private TriggerTask(
-				final AtomicInteger serviceStatus,
-				final AsyncExceptionHandler exceptionHandler,
-				final Object lock,
-				final ProcessingTimeCallback target,
-				final long timestamp) {
+        if (receivedInterrupt) {
+            Thread.currentThread().interrupt();
+        }
 
-			this.serviceStatus = Preconditions.checkNotNull(serviceStatus);
-			this.exceptionHandler = Preconditions.checkNotNull(exceptionHandler);
-			this.lock = Preconditions.checkNotNull(lock);
-			this.target = Preconditions.checkNotNull(target);
-			this.timestamp = timestamp;
-		}
+        return shutdownComplete;
+    }
 
-		@Override
-		public void run() {
-			synchronized (lock) {
-				try {
-					if (serviceStatus.get() == STATUS_ALIVE) {
-						target.onProcessingTime(timestamp);
-					}
-				} catch (Throwable t) {
-					TimerException asyncException = new TimerException(t);
-					exceptionHandler.handleAsyncException("Caught exception while processing timer.", asyncException);
-				}
-			}
-		}
-	}
+    // safety net to destroy the thread pool
+    @Override
+    protected void finalize() throws Throwable {
+        super.finalize();
+        timerService.shutdownNow();
+    }
 
-	/**
-	 * Internal task which is repeatedly called by the processing time service.
-	 */
-	private static final class RepeatedTriggerTask implements Runnable {
+    @VisibleForTesting
+    int getNumTasksScheduled() {
+        BlockingQueue<?> queue = timerService.getQueue();
+        if (queue == null) {
+            return 0;
+        } else {
+            return queue.size();
+        }
+    }
 
-		private final AtomicInteger serviceStatus;
-		private final Object lock;
-		private final ProcessingTimeCallback target;
-		private final long period;
-		private final AsyncExceptionHandler exceptionHandler;
+    // ------------------------------------------------------------------------
 
-		private long nextTimestamp;
+    private class ScheduledTaskExecutor extends ScheduledThreadPoolExecutor {
 
-		private RepeatedTriggerTask(
-				final AtomicInteger serviceStatus,
-				final AsyncExceptionHandler exceptionHandler,
-				final Object lock,
-				final ProcessingTimeCallback target,
-				final long nextTimestamp,
-				final long period) {
+        public ScheduledTaskExecutor(int corePoolSize) {
+            super(corePoolSize);
+        }
 
-			this.serviceStatus = Preconditions.checkNotNull(serviceStatus);
-			this.lock = Preconditions.checkNotNull(lock);
-			this.target = Preconditions.checkNotNull(target);
-			this.period = period;
-			this.exceptionHandler = Preconditions.checkNotNull(exceptionHandler);
+        public ScheduledTaskExecutor(int corePoolSize, ThreadFactory threadFactory) {
+            super(corePoolSize, threadFactory);
+        }
 
-			this.nextTimestamp = nextTimestamp;
-		}
+        @Override
+        protected void terminated() {
+            super.terminated();
+            quiesceCompletedFuture.complete(null);
+        }
+    }
 
-		@Override
-		public void run() {
-			synchronized (lock) {
-				try {
-					if (serviceStatus.get() == STATUS_ALIVE) {
-						target.onProcessingTime(nextTimestamp);
-					}
+    /** An exception handler, called when {@link ProcessingTimeCallback} throws an exception. */
+    interface ExceptionHandler {
+        void handleException(Exception ex);
+    }
 
-					nextTimestamp += period;
-				} catch (Throwable t) {
-					TimerException asyncException = new TimerException(t);
-					exceptionHandler.handleAsyncException("Caught exception while processing repeated timer task.", asyncException);
-				}
-			}
-		}
-	}
+    private Runnable wrapOnTimerCallback(ProcessingTimeCallback callback, long timestamp) {
+        return new ScheduledTask(status, exceptionHandler, callback, timestamp, 0);
+    }
 
-	// ------------------------------------------------------------------------
+    private Runnable wrapOnTimerCallback(
+            ProcessingTimeCallback callback, long nextTimestamp, long period) {
+        return new ScheduledTask(status, exceptionHandler, callback, nextTimestamp, period);
+    }
 
-	private static final class NeverCompleteFuture implements ScheduledFuture<Object> {
+    private static final class ScheduledTask implements Runnable {
+        private final AtomicInteger serviceStatus;
+        private final ExceptionHandler exceptionHandler;
+        private final ProcessingTimeCallback callback;
 
-		private final Object lock = new Object();
+        private long nextTimestamp;
+        private final long period;
 
-		private final long delayMillis;
+        ScheduledTask(
+                AtomicInteger serviceStatus,
+                ExceptionHandler exceptionHandler,
+                ProcessingTimeCallback callback,
+                long timestamp,
+                long period) {
+            this.serviceStatus = serviceStatus;
+            this.exceptionHandler = exceptionHandler;
+            this.callback = callback;
+            this.nextTimestamp = timestamp;
+            this.period = period;
+        }
 
-		private volatile boolean canceled;
-
-		private NeverCompleteFuture(long delayMillis) {
-			this.delayMillis = delayMillis;
-		}
-
-		@Override
-		public long getDelay(@Nonnull TimeUnit unit) {
-			return unit.convert(delayMillis, TimeUnit.MILLISECONDS);
-		}
-
-		@Override
-		public int compareTo(@Nonnull Delayed o) {
-			long otherMillis = o.getDelay(TimeUnit.MILLISECONDS);
-			return Long.compare(this.delayMillis, otherMillis);
-		}
-
-		@Override
-		public boolean cancel(boolean mayInterruptIfRunning) {
-			synchronized (lock) {
-				canceled = true;
-				lock.notifyAll();
-			}
-			return true;
-		}
-
-		@Override
-		public boolean isCancelled() {
-			return canceled;
-		}
-
-		@Override
-		public boolean isDone() {
-			return false;
-		}
-
-		@Override
-		public Object get() throws InterruptedException {
-			synchronized (lock) {
-				while (!canceled) {
-					lock.wait();
-				}
-			}
-			throw new CancellationException();
-		}
-
-		@Override
-		public Object get(long timeout, @Nonnull TimeUnit unit) throws InterruptedException, TimeoutException {
-			synchronized (lock) {
-				while (!canceled) {
-					unit.timedWait(lock, timeout);
-				}
-
-				if (canceled) {
-					throw new CancellationException();
-				} else {
-					throw new TimeoutException();
-				}
-			}
-		}
-	}
+        @Override
+        public void run() {
+            if (serviceStatus.get() != STATUS_ALIVE) {
+                return;
+            }
+            try {
+                callback.onProcessingTime(nextTimestamp);
+            } catch (Exception ex) {
+                exceptionHandler.handleException(ex);
+            }
+            nextTimestamp += period;
+        }
+    }
 }

@@ -18,30 +18,39 @@
 
 package org.apache.flink.streaming.connectors.elasticsearch.util;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.streaming.connectors.elasticsearch.ActionRequestFailureHandler;
 import org.apache.flink.streaming.connectors.elasticsearch.RequestIndexer;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.common.util.concurrent.EsRejectedExecutionException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * An {@link ActionRequestFailureHandler} that re-adds requests that failed due to temporary
- * {@link EsRejectedExecutionException}s (which means that Elasticsearch node queues are currently full),
+ * An {@link ActionRequestFailureHandler} that re-adds requests that failed due to temporary {@link
+ * EsRejectedExecutionException}s (which means that Elasticsearch node queues are currently full),
  * and fails for all other failures.
  */
+@PublicEvolving
 public class RetryRejectedExecutionFailureHandler implements ActionRequestFailureHandler {
 
-	private static final long serialVersionUID = -7423562912824511906L;
+    private static final long serialVersionUID = -7423562912824511906L;
 
-	@Override
-	public void onFailure(ActionRequest action, Throwable failure, int restStatusCode, RequestIndexer indexer) throws Throwable {
-		if (ExceptionUtils.findThrowable(failure, EsRejectedExecutionException.class).isPresent()) {
-			indexer.add(action);
-		} else {
-			// rethrow all other failures
-			throw failure;
-		}
-	}
+    private static final Logger LOG =
+            LoggerFactory.getLogger(RetryRejectedExecutionFailureHandler.class);
 
+    @Override
+    public void onFailure(
+            ActionRequest action, Throwable failure, int restStatusCode, RequestIndexer indexer)
+            throws Throwable {
+        LOG.error("Failed Elasticsearch item request: {}", failure.getMessage(), failure);
+        if (ExceptionUtils.findThrowable(failure, EsRejectedExecutionException.class).isPresent()) {
+            indexer.add(action);
+        } else {
+            // rethrow all other failures
+            throw failure;
+        }
+    }
 }

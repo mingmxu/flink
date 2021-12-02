@@ -21,52 +21,72 @@ package org.apache.flink.runtime.rest.messages;
 import org.apache.flink.runtime.rest.util.RestMapperUtils;
 import org.apache.flink.util.TestLogger;
 
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JavaType;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.junit.Assert;
 import org.junit.Test;
 
+import java.util.Collection;
+import java.util.Collections;
+
 /**
- * Test base for verifying that marshalling / unmarshalling REST {@link ResponseBody}s work properly.
+ * Test base for verifying that marshalling / unmarshalling REST {@link ResponseBody}s work
+ * properly.
  */
 public abstract class RestResponseMarshallingTestBase<R extends ResponseBody> extends TestLogger {
 
-	/**
-	 * Returns the class of the test response.
-	 *
-	 * @return class of the test response type
-	 */
-	protected abstract Class<R> getTestResponseClass();
+    /**
+     * Returns the class of the test response.
+     *
+     * @return class of the test response type
+     */
+    protected abstract Class<R> getTestResponseClass();
 
-	/**
-	 * Returns an instance of a response to be tested.
-	 *
-	 * @return instance of the expected test response
-	 */
-	protected abstract R getTestResponseInstance() throws Exception;
+    protected Collection<Class<?>> getTypeParameters() {
+        return Collections.emptyList();
+    }
 
-	/**
-	 * Tests that we can marshal and unmarshal the response.
-	 */
-	@Test
-	public void testJsonMarshalling() throws Exception {
-		final R expected = getTestResponseInstance();
+    /**
+     * Returns an instance of a response to be tested.
+     *
+     * @return instance of the expected test response
+     */
+    protected abstract R getTestResponseInstance() throws Exception;
 
-		ObjectMapper objectMapper = RestMapperUtils.getStrictObjectMapper();
-		final String marshalled = objectMapper.writeValueAsString(expected);
+    /** Tests that we can marshal and unmarshal the response. */
+    @Test
+    public void testJsonMarshalling() throws Exception {
+        final R expected = getTestResponseInstance();
 
-		final R unmarshalled = objectMapper.readValue(marshalled, getTestResponseClass());
-		assertOriginalEqualsToUnmarshalled(expected, unmarshalled);
-	}
+        ObjectMapper objectMapper = RestMapperUtils.getStrictObjectMapper();
+        final String marshalled = objectMapper.writeValueAsString(expected);
 
-	/**
-	 * Asserts that two objects are equal. If they are not, an {@link AssertionError} is thrown.
-	 *
-	 * @param expected expected value
-	 * @param actual   the value to check against expected
-	 */
-	protected void assertOriginalEqualsToUnmarshalled(R expected, R actual) {
-		Assert.assertEquals(expected, actual);
-	}
+        final Collection<Class<?>> typeParameters = getTypeParameters();
+        final JavaType type;
 
+        if (typeParameters.isEmpty()) {
+            type = objectMapper.getTypeFactory().constructType(getTestResponseClass());
+        } else {
+            type =
+                    objectMapper
+                            .getTypeFactory()
+                            .constructParametricType(
+                                    getTestResponseClass(),
+                                    typeParameters.toArray(new Class<?>[typeParameters.size()]));
+        }
+
+        final R unmarshalled = objectMapper.readValue(marshalled, type);
+        assertOriginalEqualsToUnmarshalled(expected, unmarshalled);
+    }
+
+    /**
+     * Asserts that two objects are equal. If they are not, an {@link AssertionError} is thrown.
+     *
+     * @param expected expected value
+     * @param actual the value to check against expected
+     */
+    protected void assertOriginalEqualsToUnmarshalled(R expected, R actual) {
+        Assert.assertEquals(expected, actual);
+    }
 }

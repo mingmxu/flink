@@ -19,74 +19,73 @@
 package org.apache.flink.formats.avro;
 
 import org.apache.flink.client.program.PackagedProgram;
-import org.apache.flink.configuration.ConfigConstants;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.formats.avro.testjar.AvroExternalJarProgram;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
+import org.apache.flink.runtime.minicluster.MiniCluster;
+import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.test.util.TestEnvironment;
+import org.apache.flink.util.JarUtils;
 import org.apache.flink.util.TestLogger;
 
-import org.junit.Assert;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import java.io.File;
-import java.net.URL;
+import java.io.IOException;
 import java.util.Collections;
 
-/**
- * IT case for the {@link AvroExternalJarProgram}.
- */
+/** IT case for the {@link AvroExternalJarProgram}. */
 public class AvroExternalJarProgramITCase extends TestLogger {
 
-	private static final String JAR_FILE = "maven-test-jar.jar";
+    private static final String JAR_FILE = "maven-test-jar.jar";
 
-	private static final String TEST_DATA_FILE = "/testdata.avro";
+    private static final String TEST_DATA_FILE = "/testdata.avro";
 
-	@Test
-	public void testExternalProgram() {
+    private static final int PARALLELISM = 4;
 
-		LocalFlinkMiniCluster testMiniCluster = null;
+    private static final MiniCluster MINI_CLUSTER =
+            new MiniCluster(
+                    new MiniClusterConfiguration.Builder()
+                            .setNumTaskManagers(1)
+                            .setNumSlotsPerTaskManager(PARALLELISM)
+                            .build());
 
-		try {
-			int parallelism = 4;
-			Configuration config = new Configuration();
-			config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, parallelism);
-			testMiniCluster = new LocalFlinkMiniCluster(config, false);
-			testMiniCluster.start();
+    @BeforeClass
+    public static void setUp() throws Exception {
+        MINI_CLUSTER.start();
+    }
 
-			String jarFile = JAR_FILE;
-			String testData = getClass().getResource(TEST_DATA_FILE).toString();
+    @AfterClass
+    public static void tearDown() {
+        TestEnvironment.unsetAsContext();
+        MINI_CLUSTER.closeAsync();
+    }
 
-			PackagedProgram program = new PackagedProgram(new File(jarFile), new String[] { testData });
+    @Test
+    public void testExternalProgram() throws Exception {
 
-			TestEnvironment.setAsContext(
-				testMiniCluster,
-				parallelism,
-				Collections.singleton(new Path(jarFile)),
-				Collections.<URL>emptyList());
+        String jarFile = JAR_FILE;
+        try {
+            JarUtils.checkJarFile(new File(jarFile).getAbsoluteFile().toURI().toURL());
+        } catch (IOException e) {
+            jarFile = "target/".concat(jarFile);
+        }
 
-			config.setString(JobManagerOptions.ADDRESS, "localhost");
-			config.setInteger(JobManagerOptions.PORT, testMiniCluster.getLeaderRPCPort());
+        TestEnvironment.setAsContext(
+                MINI_CLUSTER,
+                PARALLELISM,
+                Collections.singleton(new Path(jarFile)),
+                Collections.emptyList());
 
-			program.invokeInteractiveModeForExecution();
-		}
-		catch (Throwable t) {
-			System.err.println(t.getMessage());
-			t.printStackTrace();
-			Assert.fail("Error during the packaged program execution: " + t.getMessage());
-		}
-		finally {
-			TestEnvironment.unsetAsContext();
+        String testData = getClass().getResource(TEST_DATA_FILE).toString();
 
-			if (testMiniCluster != null) {
-				try {
-					testMiniCluster.stop();
-				} catch (Throwable t) {
-					// ignore
-				}
-			}
-		}
-	}
+        PackagedProgram program =
+                PackagedProgram.newBuilder()
+                        .setJarFile(new File(jarFile))
+                        .setArguments(new String[] {testData})
+                        .build();
+
+        program.invokeInteractiveModeForExecution();
+    }
 }

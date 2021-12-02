@@ -18,12 +18,14 @@
 
 package org.apache.flink.runtime.rest.messages;
 
-import org.apache.flink.runtime.rest.handler.RestHandlerSpecification;
-
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
+import java.util.Collection;
+import java.util.Collections;
+
 /**
- * This class links {@link RequestBody}s to {@link ResponseBody}s types and contains meta-data required for their http headers.
+ * This class links {@link RequestBody}s to {@link ResponseBody}s types and contains meta-data
+ * required for their http headers.
  *
  * <p>Implementations must be state-less.
  *
@@ -31,34 +33,37 @@ import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseSt
  * @param <P> response message type
  * @param <M> message parameters type
  */
-public interface MessageHeaders<R extends RequestBody, P extends ResponseBody, M extends MessageParameters> extends RestHandlerSpecification {
+public interface MessageHeaders<
+                R extends RequestBody, P extends ResponseBody, M extends MessageParameters>
+        extends UntypedResponseMessageHeaders<R, M> {
 
-	/**
-	 * Returns the class of the request message.
-	 *
-	 * @return class of the request message
-	 */
-	Class<R> getRequestClass();
+    /**
+     * Returns the class of the response message.
+     *
+     * @return class of the response message
+     */
+    Class<P> getResponseClass();
 
-	/**
-	 * Returns the class of the response message.
-	 *
-	 * @return class of the response message
-	 */
-	Class<P> getResponseClass();
+    /**
+     * Returns the http status code for the response.
+     *
+     * @return http status code of the response
+     */
+    HttpResponseStatus getResponseStatusCode();
 
-	/**
-	 * Returns the http status code for the response.
-	 *
-	 * @return http status code of the response
-	 */
-	HttpResponseStatus getResponseStatusCode();
+    /**
+     * Returns the collection of type parameters for the response type.
+     *
+     * @return Collection of type parameters for the response type
+     */
+    default Collection<Class<?>> getResponseTypeParameters() {
+        return Collections.emptyList();
+    }
 
-	/**
-	 * Returns a new {@link MessageParameters} object.
-	 *
-	 * @return new message parameters object
-	 */
-	M getUnresolvedMessageParameters();
-
+    /**
+     * Returns the description for this header.
+     *
+     * @return description for the header
+     */
+    String getDescription();
 }

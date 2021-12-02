@@ -18,150 +18,130 @@
 
 package org.apache.flink.runtime.messages.webmonitor;
 
-import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.resourcemanager.ResourceOverview;
-import org.apache.flink.util.Preconditions;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonCreator;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
-import java.util.Collection;
-
 /**
- * Response to the {@link RequestStatusOverview} message, carrying a description
- * of the Flink cluster status.
+ * Response to the {@link RequestStatusOverview} message, carrying a description of the Flink
+ * cluster status.
  */
 public class ClusterOverview extends JobsOverview {
 
-	private static final long serialVersionUID = -729861859715105265L;
+    private static final long serialVersionUID = -729861859715105265L;
 
-	public static final String FIELD_NAME_TASKMANAGERS = "taskmanagers";
-	public static final String FIELD_NAME_SLOTS_TOTAL = "slots-total";
-	public static final String FIELD_NAME_SLOTS_AVAILABLE = "slots-available";
+    public static final String FIELD_NAME_TASKMANAGERS = "taskmanagers";
+    public static final String FIELD_NAME_SLOTS_TOTAL = "slots-total";
+    public static final String FIELD_NAME_SLOTS_AVAILABLE = "slots-available";
 
-	@JsonProperty(FIELD_NAME_TASKMANAGERS)
-	private final int numTaskManagersConnected;
+    @JsonProperty(FIELD_NAME_TASKMANAGERS)
+    private final int numTaskManagersConnected;
 
-	@JsonProperty(FIELD_NAME_SLOTS_TOTAL)
-	private final int numSlotsTotal;
+    @JsonProperty(FIELD_NAME_SLOTS_TOTAL)
+    private final int numSlotsTotal;
 
-	@JsonProperty(FIELD_NAME_SLOTS_AVAILABLE)
-	private final int numSlotsAvailable;
+    @JsonProperty(FIELD_NAME_SLOTS_AVAILABLE)
+    private final int numSlotsAvailable;
 
-	@JsonCreator
-	public ClusterOverview(
-			@JsonProperty(FIELD_NAME_TASKMANAGERS) int numTaskManagersConnected,
-			@JsonProperty(FIELD_NAME_SLOTS_TOTAL) int numSlotsTotal,
-			@JsonProperty(FIELD_NAME_SLOTS_AVAILABLE) int numSlotsAvailable,
-			@JsonProperty(FIELD_NAME_JOBS_RUNNING) int numJobsRunningOrPending,
-			@JsonProperty(FIELD_NAME_JOBS_FINISHED) int numJobsFinished,
-			@JsonProperty(FIELD_NAME_JOBS_CANCELLED) int numJobsCancelled,
-			@JsonProperty(FIELD_NAME_JOBS_FAILED) int numJobsFailed) {
+    @JsonCreator
+    public ClusterOverview(
+            @JsonProperty(FIELD_NAME_TASKMANAGERS) int numTaskManagersConnected,
+            @JsonProperty(FIELD_NAME_SLOTS_TOTAL) int numSlotsTotal,
+            @JsonProperty(FIELD_NAME_SLOTS_AVAILABLE) int numSlotsAvailable,
+            @JsonProperty(FIELD_NAME_JOBS_RUNNING) int numJobsRunningOrPending,
+            @JsonProperty(FIELD_NAME_JOBS_FINISHED) int numJobsFinished,
+            @JsonProperty(FIELD_NAME_JOBS_CANCELLED) int numJobsCancelled,
+            @JsonProperty(FIELD_NAME_JOBS_FAILED) int numJobsFailed) {
 
-		super(numJobsRunningOrPending, numJobsFinished, numJobsCancelled, numJobsFailed);
-		
-		this.numTaskManagersConnected = numTaskManagersConnected;
-		this.numSlotsTotal = numSlotsTotal;
-		this.numSlotsAvailable = numSlotsAvailable;
-	}
+        super(numJobsRunningOrPending, numJobsFinished, numJobsCancelled, numJobsFailed);
 
-	public ClusterOverview(int numTaskManagersConnected, int numSlotsTotal, int numSlotsAvailable,
-						   JobsOverview jobs1, JobsOverview jobs2) {
-		super(jobs1, jobs2);
-		this.numTaskManagersConnected = numTaskManagersConnected;
-		this.numSlotsTotal = numSlotsTotal;
-		this.numSlotsAvailable = numSlotsAvailable;
-	}
+        this.numTaskManagersConnected = numTaskManagersConnected;
+        this.numSlotsTotal = numSlotsTotal;
+        this.numSlotsAvailable = numSlotsAvailable;
+    }
 
-	public int getNumTaskManagersConnected() {
-		return numTaskManagersConnected;
-	}
+    public ClusterOverview(
+            int numTaskManagersConnected,
+            int numSlotsTotal,
+            int numSlotsAvailable,
+            JobsOverview jobs1,
+            JobsOverview jobs2) {
+        super(jobs1, jobs2);
+        this.numTaskManagersConnected = numTaskManagersConnected;
+        this.numSlotsTotal = numSlotsTotal;
+        this.numSlotsAvailable = numSlotsAvailable;
+    }
 
-	public int getNumSlotsTotal() {
-		return numSlotsTotal;
-	}
+    public ClusterOverview(ResourceOverview resourceOverview, JobsOverview jobsOverview) {
+        this(
+                resourceOverview.getNumberTaskManagers(),
+                resourceOverview.getNumberRegisteredSlots(),
+                resourceOverview.getNumberFreeSlots(),
+                jobsOverview.getNumJobsRunningOrPending(),
+                jobsOverview.getNumJobsFinished(),
+                jobsOverview.getNumJobsCancelled(),
+                jobsOverview.getNumJobsFailed());
+    }
 
-	public int getNumSlotsAvailable() {
-		return numSlotsAvailable;
-	}
-	
-	// ------------------------------------------------------------------------
-	
-	@Override
-	public boolean equals(Object obj) {
-		if (this == obj) {
-			return true;
-		}
-		else if (obj instanceof ClusterOverview) {
-			ClusterOverview that = (ClusterOverview) obj;
-			return this.numTaskManagersConnected == that.numTaskManagersConnected &&
-					this.numSlotsTotal == that.numSlotsTotal &&
-					this.numSlotsAvailable == that.numSlotsAvailable &&
-					this.getNumJobsRunningOrPending() == that.getNumJobsRunningOrPending() &&
-					this.getNumJobsFinished() == that.getNumJobsFinished() &&
-					this.getNumJobsCancelled() == that.getNumJobsCancelled() &&
-					this.getNumJobsFailed() == that.getNumJobsFailed();
-		}
-		else {
-			return false;
-		}
-	}
+    public int getNumTaskManagersConnected() {
+        return numTaskManagersConnected;
+    }
 
-	@Override
-	public int hashCode() {
-		int result = super.hashCode();
-		result = 31 * result + numTaskManagersConnected;
-		result = 31 * result + numSlotsTotal;
-		result = 31 * result + numSlotsAvailable;
-		return result;
-	}
+    public int getNumSlotsTotal() {
+        return numSlotsTotal;
+    }
 
-	@Override
-	public String toString() {
-		return "StatusOverview {" +
-				"numTaskManagersConnected=" + numTaskManagersConnected +
-				", numSlotsTotal=" + numSlotsTotal +
-				", numSlotsAvailable=" + numSlotsAvailable +
-				", numJobsRunningOrPending=" + getNumJobsRunningOrPending() +
-				", numJobsFinished=" + getNumJobsFinished() +
-				", numJobsCancelled=" + getNumJobsCancelled() +
-				", numJobsFailed=" + getNumJobsFailed() +
-				'}';
-	}
+    public int getNumSlotsAvailable() {
+        return numSlotsAvailable;
+    }
 
-	public static ClusterOverview create(ResourceOverview resourceOverview, Collection<JobStatus> allJobsStatus) {
-		Preconditions.checkNotNull(resourceOverview);
-		Preconditions.checkNotNull(allJobsStatus);
+    // ------------------------------------------------------------------------
 
-		int numberRunningOrPendingJobs = 0;
-		int numberFinishedJobs = 0;
-		int numberCancelledJobs = 0;
-		int numberFailedJobs = 0;
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        } else if (obj instanceof ClusterOverview) {
+            ClusterOverview that = (ClusterOverview) obj;
+            return this.numTaskManagersConnected == that.numTaskManagersConnected
+                    && this.numSlotsTotal == that.numSlotsTotal
+                    && this.numSlotsAvailable == that.numSlotsAvailable
+                    && this.getNumJobsRunningOrPending() == that.getNumJobsRunningOrPending()
+                    && this.getNumJobsFinished() == that.getNumJobsFinished()
+                    && this.getNumJobsCancelled() == that.getNumJobsCancelled()
+                    && this.getNumJobsFailed() == that.getNumJobsFailed();
+        } else {
+            return false;
+        }
+    }
 
-		for (JobStatus status : allJobsStatus) {
-			switch (status) {
-				case FINISHED:
-					numberFinishedJobs++;
-					break;
-				case FAILED:
-					numberFailedJobs++;
-					break;
-				case CANCELED:
-					numberCancelledJobs++;
-					break;
-				default:
-					numberRunningOrPendingJobs++;
-					break;
-			}
-		}
+    @Override
+    public int hashCode() {
+        int result = super.hashCode();
+        result = 31 * result + numTaskManagersConnected;
+        result = 31 * result + numSlotsTotal;
+        result = 31 * result + numSlotsAvailable;
+        return result;
+    }
 
-		return new ClusterOverview(
-			resourceOverview.getNumberTaskManagers(),
-			resourceOverview.getNumberRegisteredSlots(),
-			resourceOverview.getNumberFreeSlots(),
-			numberRunningOrPendingJobs,
-			numberFinishedJobs,
-			numberCancelledJobs,
-			numberFailedJobs);
-	}
+    @Override
+    public String toString() {
+        return "StatusOverview {"
+                + "numTaskManagersConnected="
+                + numTaskManagersConnected
+                + ", numSlotsTotal="
+                + numSlotsTotal
+                + ", numSlotsAvailable="
+                + numSlotsAvailable
+                + ", numJobsRunningOrPending="
+                + getNumJobsRunningOrPending()
+                + ", numJobsFinished="
+                + getNumJobsFinished()
+                + ", numJobsCancelled="
+                + getNumJobsCancelled()
+                + ", numJobsFailed="
+                + getNumJobsFailed()
+                + '}';
+    }
 }

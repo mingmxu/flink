@@ -1,4 +1,4 @@
-
+<!--
 *Thank you very much for contributing to Apache Flink - we are happy that you want to help us improve Flink. To help the community review your contribution in the best possible way, please go through the checklist below, which will get the contribution into a shape in which it can be best reviewed.*
 
 *Please understand that we do not do this to make contributions to Flink a hassle. In order to uphold a high standard of quality for code contributions, while at the same time managing a large number of contributions, we need contributors to prepare the contributions well, and give reviewers enough contextual information for the review. Please also understand that contributions that do not follow this guide will take longer to review and thus typically be picked up with lower priority by the community.*
@@ -12,7 +12,7 @@
 
   - Fill out the template below to describe the changes contributed by the pull request. That will give reviewers the context they need to do the review.
   
-  - Make sure that the change passes the automated tests, i.e., `mvn clean verify` passes. You can set up Travis CI to do that following [this guide](http://flink.apache.org/contribute-code.html#best-practices).
+  - Make sure that the change passes the automated tests, i.e., `mvn clean verify` passes. You can set up Azure Pipelines CI to do that following [this guide](https://cwiki.apache.org/confluence/display/FLINK/Azure+Pipelines#AzurePipelines-Tutorial:SettingupAzurePipelinesforaforkoftheFlinkrepository).
 
   - Each pull request should address only one issue, not mix up code from multiple issues.
   
@@ -22,6 +22,7 @@
 
 
 **(The sections below can be removed for hotfixes of typos)**
+-->
 
 ## What is the purpose of the change
 
@@ -37,6 +38,8 @@
 
 
 ## Verifying this change
+
+Please make sure both new and modified tests in this PR follows the conventions defined in our code quality guide: https://flink.apache.org/contributing/code-style-and-quality-common.html#testing
 
 *(Please pick either of the following options)*
 
@@ -62,7 +65,7 @@ This change added tests and can be verified as follows:
   - The public API, i.e., is any changed class annotated with `@Public(Evolving)`: (yes / no)
   - The serializers: (yes / no / don't know)
   - The runtime per-record code paths (performance sensitive): (yes / no / don't know)
-  - Anything that affects deployment or recovery: JobManager (and its components), Checkpointing, Yarn/Mesos, ZooKeeper: (yes / no / don't know)
+  - Anything that affects deployment or recovery: JobManager (and its components), Checkpointing, Kubernetes/Yarn, ZooKeeper: (yes / no / don't know)
   - The S3 file system connector: (yes / no / don't know)
 
 ## Documentation

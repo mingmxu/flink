@@ -18,7 +18,9 @@
 
 package org.apache.flink.runtime.io.network.buffer;
 
-import org.apache.flink.shaded.guava18.com.google.common.collect.Lists;
+import org.apache.flink.core.memory.MemorySegment;
+import org.apache.flink.runtime.execution.CancelTaskException;
+import org.apache.flink.util.TestLogger;
 
 import org.junit.After;
 import org.junit.AfterClass;
@@ -26,424 +28,530 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.powermock.api.mockito.PowerMockito.spy;
 
-public class LocalBufferPoolTest {
+/** Tests for the {@link LocalBufferPool}. */
+public class LocalBufferPoolTest extends TestLogger {
+
+    private static final int numBuffers = 1024;
+
+    private static final int memorySegmentSize = 128;
+
+    private NetworkBufferPool networkBufferPool;
+
+    private BufferPool localBufferPool;
+
+    private static final ExecutorService executor = Executors.newCachedThreadPool();
+
+    @Before
+    public void setupLocalBufferPool() throws Exception {
+        networkBufferPool = new NetworkBufferPool(numBuffers, memorySegmentSize);
+        localBufferPool = new LocalBufferPool(networkBufferPool, 1);
+
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+    }
+
+    @After
+    public void destroyAndVerifyAllBuffersReturned() {
+        if (!localBufferPool.isDestroyed()) {
+            localBufferPool.lazyDestroy();
+        }
+
+        String msg = "Did not return all buffers to memory segment pool after test.";
+        assertEquals(msg, numBuffers, networkBufferPool.getNumberOfAvailableMemorySegments());
+        // no other local buffer pools used than the one above, but call just in case
+        networkBufferPool.destroyAllBufferPools();
+        networkBufferPool.destroy();
+    }
+
+    @AfterClass
+    public static void shutdownExecutor() {
+        executor.shutdownNow();
+    }
+
+    @Test
+    public void testReserveSegments() throws Exception {
+        NetworkBufferPool networkBufferPool =
+                new NetworkBufferPool(2, memorySegmentSize, Duration.ofSeconds(2));
+        try {
+            BufferPool bufferPool1 = networkBufferPool.createBufferPool(1, 2);
+            assertThrows(IllegalArgumentException.class, () -> bufferPool1.reserveSegments(2));
 
-	private final static int numBuffers = 1024;
+            // request all buffers
+            ArrayList<Buffer> buffers = new ArrayList<>(2);
+            buffers.add(bufferPool1.requestBuffer());
+            buffers.add(bufferPool1.requestBuffer());
+            assertEquals(2, buffers.size());
 
-	private final static int memorySegmentSize = 128;
+            BufferPool bufferPool2 = networkBufferPool.createBufferPool(1, 10);
+            assertThrows(IOException.class, () -> bufferPool2.reserveSegments(1));
+            assertFalse(bufferPool2.isAvailable());
+
+            buffers.forEach(Buffer::recycleBuffer);
+            bufferPool1.lazyDestroy();
+            bufferPool2.lazyDestroy();
+
+            BufferPool bufferPool3 = networkBufferPool.createBufferPool(2, 10);
+            assertEquals(1, bufferPool3.getNumberOfAvailableMemorySegments());
+            bufferPool3.reserveSegments(2);
+            assertEquals(2, bufferPool3.getNumberOfAvailableMemorySegments());
+
+            bufferPool3.lazyDestroy();
+            assertThrows(CancelTaskException.class, () -> bufferPool3.reserveSegments(1));
+        } finally {
+            networkBufferPool.destroy();
+        }
+    }
+
+    @Test
+    public void testRequestMoreThanAvailable() {
+        localBufferPool.setNumBuffers(numBuffers);
+
+        List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
 
-	private NetworkBufferPool networkBufferPool;
+        for (int i = 1; i <= numBuffers; i++) {
+            Buffer buffer = localBufferPool.requestBuffer();
 
-	private BufferPool localBufferPool;
+            assertEquals(Math.min(i + 1, numBuffers), getNumRequestedFromMemorySegmentPool());
+            assertNotNull(buffer);
 
-	private final static ExecutorService executor = Executors.newCachedThreadPool();
+            requests.add(buffer);
+        }
 
-	@Before
-	public void setupLocalBufferPool() {
-		networkBufferPool = new NetworkBufferPool(numBuffers, memorySegmentSize);
-		localBufferPool = new LocalBufferPool(networkBufferPool, 1);
+        {
+            // One more...
+            Buffer buffer = localBufferPool.requestBuffer();
+            assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
+            assertNull(buffer);
+        }
 
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-	}
+        for (Buffer buffer : requests) {
+            buffer.recycleBuffer();
+        }
+    }
 
-	@After
-	public void destroyAndVerifyAllBuffersReturned() throws IOException {
-		if (!localBufferPool.isDestroyed()) {
-			localBufferPool.lazyDestroy();
-		}
+    @Test
+    public void testSetNumAfterDestroyDoesNotProactivelyFetchSegments() {
+        localBufferPool.setNumBuffers(2);
+        assertEquals(2L, localBufferPool.getNumBuffers());
+        assertEquals(1L, localBufferPool.getNumberOfAvailableMemorySegments());
 
-		String msg = "Did not return all buffers to memory segment pool after test.";
-		assertEquals(msg, numBuffers, networkBufferPool.getNumberOfAvailableMemorySegments());
-		// no other local buffer pools used than the one above, but call just in case
-		networkBufferPool.destroyAllBufferPools();
-		networkBufferPool.destroy();
-	}
+        localBufferPool.lazyDestroy();
+        localBufferPool.setNumBuffers(3);
+        assertEquals(3L, localBufferPool.getNumBuffers());
+        assertEquals(0L, localBufferPool.getNumberOfAvailableMemorySegments());
+    }
 
-	@AfterClass
-	public static void shutdownExecutor() {
-		executor.shutdownNow();
-	}
+    @Test
+    public void testRecycleAfterDestroy() {
+        localBufferPool.setNumBuffers(numBuffers);
 
-	@Test
-	public void testRequestMoreThanAvailable() throws IOException {
-		localBufferPool.setNumBuffers(numBuffers);
+        List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
 
-		List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
+        for (int i = 0; i < numBuffers; i++) {
+            requests.add(localBufferPool.requestBuffer());
+        }
 
-		for (int i = 1; i <= numBuffers; i++) {
-			Buffer buffer = localBufferPool.requestBuffer();
+        localBufferPool.lazyDestroy();
 
-			assertEquals(i, getNumRequestedFromMemorySegmentPool());
-			assertNotNull(buffer);
+        // All buffers have been requested, but can not be returned yet.
+        assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
 
-			requests.add(buffer);
-		}
+        // Recycle should return buffers to memory segment pool
+        for (Buffer buffer : requests) {
+            buffer.recycleBuffer();
+        }
+    }
 
-		{
-			// One more...
-			Buffer buffer = localBufferPool.requestBuffer();
-			assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
-			assertNull(buffer);
-		}
+    @Test
+    public void testRecycleExcessBuffersAfterRecycling() {
+        localBufferPool.setNumBuffers(numBuffers);
 
-		for (Buffer buffer : requests) {
-			buffer.recycle();
-		}
-	}
+        List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
 
-	@Test
-	public void testRequestAfterDestroy() throws IOException {
-		localBufferPool.lazyDestroy();
+        // Request all buffers
+        for (int i = 1; i <= numBuffers; i++) {
+            requests.add(localBufferPool.requestBuffer());
+        }
 
-		try {
-			localBufferPool.requestBuffer();
-			fail("Call should have failed with an IllegalStateException");
-		}
-		catch (IllegalStateException e) {
-			// we expect exactly that
-		}
-	}
+        assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
 
-	@Test
-	public void testRecycleAfterDestroy() throws IOException {
-		localBufferPool.setNumBuffers(numBuffers);
+        // Reduce the number of buffers in the local pool
+        localBufferPool.setNumBuffers(numBuffers / 2);
 
-		List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
+        // Need to wait until we recycle the buffers
+        assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
 
-		for (int i = 0; i < numBuffers; i++) {
-			requests.add(localBufferPool.requestBuffer());
-		}
+        for (int i = 1; i < numBuffers / 2; i++) {
+            requests.remove(0).recycleBuffer();
+            assertEquals(numBuffers - i, getNumRequestedFromMemorySegmentPool());
+        }
 
-		localBufferPool.lazyDestroy();
+        for (Buffer buffer : requests) {
+            buffer.recycleBuffer();
+        }
+    }
 
-		// All buffers have been requested, but can not be returned yet.
-		assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
+    @Test
+    public void testRecycleExcessBuffersAfterChangingNumBuffers() {
+        localBufferPool.setNumBuffers(numBuffers);
 
-		// Recycle should return buffers to memory segment pool
-		for (Buffer buffer : requests) {
-			buffer.recycle();
-		}
-	}
+        List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
 
-	@Test
-	public void testRecycleExcessBuffersAfterRecycling() throws Exception {
-		localBufferPool.setNumBuffers(numBuffers);
+        // Request all buffers
+        for (int i = 1; i <= numBuffers; i++) {
+            requests.add(localBufferPool.requestBuffer());
+        }
 
-		List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
+        // Recycle all
+        for (Buffer buffer : requests) {
+            buffer.recycleBuffer();
+        }
 
-		// Request all buffers
-		for (int i = 1; i <= numBuffers; i++) {
-			requests.add(localBufferPool.requestBuffer());
-		}
+        assertEquals(numBuffers, localBufferPool.getNumberOfAvailableMemorySegments());
 
-		assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
+        localBufferPool.setNumBuffers(numBuffers / 2);
 
-		// Reduce the number of buffers in the local pool
-		localBufferPool.setNumBuffers(numBuffers / 2);
+        assertEquals(numBuffers / 2, localBufferPool.getNumberOfAvailableMemorySegments());
+    }
 
-		// Need to wait until we recycle the buffers
-		assertEquals(numBuffers, getNumRequestedFromMemorySegmentPool());
+    @Test(expected = IllegalArgumentException.class)
+    public void testSetLessThanRequiredNumBuffers() {
+        localBufferPool.setNumBuffers(1);
 
-		for (int i = 1; i < numBuffers / 2; i++) {
-			requests.remove(0).recycle();
-			assertEquals(numBuffers - i, getNumRequestedFromMemorySegmentPool());
-		}
+        localBufferPool.setNumBuffers(0);
+    }
 
-		for (Buffer buffer : requests) {
-			buffer.recycle();
-		}
-	}
+    // ------------------------------------------------------------------------
+    // Pending requests and integration with buffer futures
+    // ------------------------------------------------------------------------
 
-	@Test
-	public void testRecycleExcessBuffersAfterChangingNumBuffers() throws Exception {
-		localBufferPool.setNumBuffers(numBuffers);
+    @Test
+    public void testPendingRequestWithListenersAfterRecycle() {
+        CountBufferListener listener1 = new CountBufferListener();
+        CountBufferListener listener2 = new CountBufferListener();
 
-		List<Buffer> requests = new ArrayList<Buffer>(numBuffers);
+        Buffer available = localBufferPool.requestBuffer();
 
-		// Request all buffers
-		for (int i = 1; i <= numBuffers; i++) {
-			requests.add(localBufferPool.requestBuffer());
-		}
+        assertNull(localBufferPool.requestBuffer());
 
-		// Recycle all
-		for (Buffer buffer : requests) {
-			buffer.recycle();
-		}
+        assertTrue(localBufferPool.addBufferListener(listener1));
+        assertTrue(localBufferPool.addBufferListener(listener2));
 
-		assertEquals(numBuffers, localBufferPool.getNumberOfAvailableMemorySegments());
-
-		localBufferPool.setNumBuffers(numBuffers / 2);
-
-		assertEquals(numBuffers / 2, localBufferPool.getNumberOfAvailableMemorySegments());
-	}
-
-	@Test(expected = IllegalArgumentException.class)
-	public void testSetLessThanRequiredNumBuffers() throws IOException {
-		localBufferPool.setNumBuffers(1);
-
-		localBufferPool.setNumBuffers(0);
-	}
-
-	// ------------------------------------------------------------------------
-	// Pending requests and integration with buffer futures
-	// ------------------------------------------------------------------------
-
-	@Test
-	public void testPendingRequestWithListenersAfterRecycle() throws Exception {
-		BufferListener twoTimesListener = createBufferListener(2);
-		BufferListener oneTimeListener = createBufferListener(1);
-
-		localBufferPool.setNumBuffers(2);
-
-		Buffer available1 = localBufferPool.requestBuffer();
-		Buffer available2 = localBufferPool.requestBuffer();
-
-		assertNull(localBufferPool.requestBuffer());
-
-		assertTrue(localBufferPool.addBufferListener(twoTimesListener));
-		assertTrue(localBufferPool.addBufferListener(oneTimeListener));
-
-		// Recycle the first buffer to notify both of the above listeners once
-		// and the twoTimesListener will be added into the registeredListeners
-		// queue of buffer pool again
-		available1.recycle();
-
-		verify(oneTimeListener, times(1)).notifyBufferAvailable(any(Buffer.class));
-		verify(twoTimesListener, times(1)).notifyBufferAvailable(any(Buffer.class));
-
-		// Recycle the second buffer to only notify the twoTimesListener
-		available2.recycle();
-
-		verify(oneTimeListener, times(1)).notifyBufferAvailable(any(Buffer.class));
-		verify(twoTimesListener, times(2)).notifyBufferAvailable(any(Buffer.class));
-	}
-
-	@Test
-	@SuppressWarnings("unchecked")
-	public void testCancelPendingRequestsAfterDestroy() throws IOException {
-		BufferListener listener = Mockito.mock(BufferListener.class);
-
-		localBufferPool.setNumBuffers(1);
-
-		Buffer available = localBufferPool.requestBuffer();
-		Buffer unavailable = localBufferPool.requestBuffer();
-
-		assertNull(unavailable);
-
-		localBufferPool.addBufferListener(listener);
-
-		localBufferPool.lazyDestroy();
-
-		available.recycle();
-
-		verify(listener, times(1)).notifyBufferDestroyed();
-	}
-
-	// ------------------------------------------------------------------------
-	// Concurrent requests
-	// ------------------------------------------------------------------------
-
-	@Test
-	@SuppressWarnings("unchecked")
-	public void testConcurrentRequestRecycle() throws ExecutionException, InterruptedException, IOException {
-		int numConcurrentTasks = 128;
-		int numBuffersToRequestPerTask = 1024;
-
-		localBufferPool.setNumBuffers(numConcurrentTasks);
-
-		Future<Boolean>[] taskResults = new Future[numConcurrentTasks];
-		for (int i = 0; i < numConcurrentTasks; i++) {
-			taskResults[i] = executor.submit(new BufferRequesterTask(localBufferPool, numBuffersToRequestPerTask));
-		}
-
-		for (int i = 0; i < numConcurrentTasks; i++) {
-			assertTrue(taskResults[i].get());
-		}
-	}
-
-	@Test
-	public void testDestroyDuringBlockingRequest() throws Exception {
-		// Config
-		final int numberOfBuffers = 1;
-
-		localBufferPool.setNumBuffers(numberOfBuffers);
-
-		final CountDownLatch sync = new CountDownLatch(1);
-
-		final Callable<List<Buffer>> requester = new Callable<List<Buffer>>() {
-
-			// Request all buffers in a blocking manner.
-			@Override
-			public List<Buffer> call() throws Exception {
-				final List<Buffer> requested = Lists.newArrayList();
-
-				// Request all available buffers
-				for (int i = 0; i < numberOfBuffers; i++) {
-					requested.add(localBufferPool.requestBufferBlocking());
-				}
-
-				// Notify that we've requested all buffers
-				sync.countDown();
-
-				// Try to request the next buffer (but pool should be destroyed either right before
-				// the request or more likely during the request).
-				try {
-					localBufferPool.requestBufferBlocking();
-					fail("Call should have failed with an IllegalStateException");
-				}
-				catch (IllegalStateException e) {
-					// we expect exactly that
-				}
-
-				return requested;
-			}
-		};
-
-		Future<List<Buffer>> f = executor.submit(requester);
-
-		sync.await();
-
-		localBufferPool.lazyDestroy();
-
-		// Increase the likelihood that the requested is currently in the request call
-		Thread.sleep(50);
-
-		// This should return immediately if everything works as expected
-		List<Buffer> requestedBuffers = f.get(60, TimeUnit.SECONDS);
-
-		for (Buffer buffer : requestedBuffers) {
-			buffer.recycle();
-		}
-	}
-
-	@Test
-	public void testBoundedBuffer() throws Exception {
-		localBufferPool.lazyDestroy();
-
-		localBufferPool = new LocalBufferPool(networkBufferPool, 1, 2);
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertEquals(2, localBufferPool.getMaxNumberOfMemorySegments());
-
-		Buffer buffer1, buffer2;
-
-		// check min number of buffers:
-		localBufferPool.setNumBuffers(1);
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNotNull(buffer1 = localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNull(localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		buffer1.recycle();
-		assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
-
-		// check max number of buffers:
-		localBufferPool.setNumBuffers(2);
-		assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNotNull(buffer1 = localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNotNull(buffer2 = localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNull(localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		buffer1.recycle();
-		assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
-		buffer2.recycle();
-		assertEquals(2, localBufferPool.getNumberOfAvailableMemorySegments());
-
-		// try to set too large buffer size:
-		localBufferPool.setNumBuffers(3);
-		assertEquals(2, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNotNull(buffer1 = localBufferPool.requestBuffer());
-		assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNotNull(buffer2 = localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNull(localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		buffer1.recycle();
-		assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
-		buffer2.recycle();
-		assertEquals(2, localBufferPool.getNumberOfAvailableMemorySegments());
-
-		// decrease size again
-		localBufferPool.setNumBuffers(1);
-		assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNotNull(buffer1 = localBufferPool.requestBuffer());
-		assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
-		assertNull(localBufferPool.requestBuffer());
-		buffer1.recycle();
-		assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
-	}
-
-	// ------------------------------------------------------------------------
-	// Helpers
-	// ------------------------------------------------------------------------
-
-	private int getNumRequestedFromMemorySegmentPool() {
-		return networkBufferPool.getTotalNumberOfMemorySegments() - networkBufferPool.getNumberOfAvailableMemorySegments();
-	}
-
-	private BufferListener createBufferListener(int notificationTimes) {
-		return spy(new BufferListener() {
-			int times = 0;
-
-			@Override
-			public boolean notifyBufferAvailable(Buffer buffer) {
-				times++;
-				buffer.recycle();
-				return times < notificationTimes;
-			}
-
-			@Override
-			public void notifyBufferDestroyed() {
-			}
-		});
-	}
-
-	private static class BufferRequesterTask implements Callable<Boolean> {
-
-		private final BufferProvider bufferProvider;
-
-		private final int numBuffersToRequest;
-
-		private BufferRequesterTask(BufferProvider bufferProvider, int numBuffersToRequest) {
-			this.bufferProvider = bufferProvider;
-			this.numBuffersToRequest = numBuffersToRequest;
-		}
-
-		@Override
-		public Boolean call() throws Exception {
-			try {
-				for (int i = 0; i < numBuffersToRequest; i++) {
-					Buffer buffer = bufferProvider.requestBufferBlocking();
-					buffer.recycle();
-				}
-			}
-			catch (Throwable t) {
-				return false;
-			}
-
-			return true;
-		}
-	}
+        // Recycle the buffer to notify both of the above listeners once
+        checkNotNull(available).recycleBuffer();
+
+        assertEquals(1, listener1.getCount());
+        assertEquals(1, listener1.getCount());
+
+        assertFalse(localBufferPool.addBufferListener(listener1));
+        assertFalse(localBufferPool.addBufferListener(listener2));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testCancelPendingRequestsAfterDestroy() {
+        BufferListener listener = Mockito.mock(BufferListener.class);
+
+        localBufferPool.setNumBuffers(1);
+
+        Buffer available = localBufferPool.requestBuffer();
+        Buffer unavailable = localBufferPool.requestBuffer();
+
+        assertNull(unavailable);
+
+        localBufferPool.addBufferListener(listener);
+
+        localBufferPool.lazyDestroy();
+
+        available.recycleBuffer();
+
+        verify(listener, times(1)).notifyBufferDestroyed();
+    }
+
+    // ------------------------------------------------------------------------
+    // Concurrent requests
+    // ------------------------------------------------------------------------
+
+    @Test
+    @SuppressWarnings("unchecked")
+    public void testConcurrentRequestRecycle() throws ExecutionException, InterruptedException {
+        int numConcurrentTasks = 128;
+        int numBuffersToRequestPerTask = 1024;
+
+        localBufferPool.setNumBuffers(numConcurrentTasks);
+
+        Future<Boolean>[] taskResults = new Future[numConcurrentTasks];
+        for (int i = 0; i < numConcurrentTasks; i++) {
+            taskResults[i] =
+                    executor.submit(
+                            new BufferRequesterTask(localBufferPool, numBuffersToRequestPerTask));
+        }
+
+        for (int i = 0; i < numConcurrentTasks; i++) {
+            assertTrue(taskResults[i].get());
+        }
+    }
+
+    @Test
+    public void testBoundedBuffer() throws Exception {
+        localBufferPool.lazyDestroy();
+
+        localBufferPool = new LocalBufferPool(networkBufferPool, 1, 2);
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertEquals(2, localBufferPool.getMaxNumberOfMemorySegments());
+
+        Buffer buffer1, buffer2;
+
+        // check min number of buffers:
+        localBufferPool.setNumBuffers(1);
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNotNull(buffer1 = localBufferPool.requestBuffer());
+        assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNull(localBufferPool.requestBuffer());
+        assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
+        buffer1.recycleBuffer();
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+
+        // check max number of buffers:
+        localBufferPool.setNumBuffers(2);
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNotNull(buffer1 = localBufferPool.requestBuffer());
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNotNull(buffer2 = localBufferPool.requestBuffer());
+        assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNull(localBufferPool.requestBuffer());
+        assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
+        buffer1.recycleBuffer();
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        buffer2.recycleBuffer();
+        assertEquals(2, localBufferPool.getNumberOfAvailableMemorySegments());
+
+        // try to set too large buffer size:
+        localBufferPool.setNumBuffers(3);
+        assertEquals(2, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNotNull(buffer1 = localBufferPool.requestBuffer());
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNotNull(buffer2 = localBufferPool.requestBuffer());
+        assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNull(localBufferPool.requestBuffer());
+        assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
+        buffer1.recycleBuffer();
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        buffer2.recycleBuffer();
+        assertEquals(2, localBufferPool.getNumberOfAvailableMemorySegments());
+
+        // decrease size again
+        localBufferPool.setNumBuffers(1);
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNotNull(buffer1 = localBufferPool.requestBuffer());
+        assertEquals(0, localBufferPool.getNumberOfAvailableMemorySegments());
+        assertNull(localBufferPool.requestBuffer());
+        buffer1.recycleBuffer();
+        assertEquals(1, localBufferPool.getNumberOfAvailableMemorySegments());
+    }
+
+    /** Moves around availability of a {@link LocalBufferPool} with varying capacity. */
+    @Test
+    public void testMaxBuffersPerChannelAndAvailability() throws Exception {
+        localBufferPool.lazyDestroy();
+        localBufferPool = new LocalBufferPool(networkBufferPool, 1, Integer.MAX_VALUE, 3, 2);
+        localBufferPool.setNumBuffers(10);
+
+        assertTrue(localBufferPool.getAvailableFuture().isDone());
+
+        // request one segment from subpartitin-0 and subpartition-1 respectively
+        final BufferBuilder bufferBuilder01 = localBufferPool.requestBufferBuilderBlocking(0);
+        final BufferBuilder bufferBuilder11 = localBufferPool.requestBufferBuilderBlocking(1);
+        assertTrue(localBufferPool.getAvailableFuture().isDone());
+
+        // request one segment from subpartition-0
+        final BufferBuilder bufferBuilder02 = localBufferPool.requestBufferBuilderBlocking(0);
+        assertFalse(localBufferPool.getAvailableFuture().isDone());
+
+        assertNull(localBufferPool.requestBufferBuilder(0));
+        final BufferBuilder bufferBuilder21 = localBufferPool.requestBufferBuilderBlocking(2);
+        final BufferBuilder bufferBuilder22 = localBufferPool.requestBufferBuilderBlocking(2);
+        assertFalse(localBufferPool.getAvailableFuture().isDone());
+
+        // recycle segments
+        bufferBuilder11.close();
+        assertFalse(localBufferPool.getAvailableFuture().isDone());
+        bufferBuilder21.close();
+        assertFalse(localBufferPool.getAvailableFuture().isDone());
+        bufferBuilder02.close();
+        assertTrue(localBufferPool.getAvailableFuture().isDone());
+        bufferBuilder01.close();
+        assertTrue(localBufferPool.getAvailableFuture().isDone());
+        bufferBuilder22.close();
+        assertTrue(localBufferPool.getAvailableFuture().isDone());
+    }
+
+    @Test
+    public void testIsAvailableOrNot() throws InterruptedException {
+
+        // the local buffer pool should be in available state initially
+        assertTrue(localBufferPool.isAvailable());
+
+        // request one buffer
+        try (BufferBuilder bufferBuilder =
+                checkNotNull(localBufferPool.requestBufferBuilderBlocking())) {
+            CompletableFuture<?> availableFuture = localBufferPool.getAvailableFuture();
+            assertFalse(availableFuture.isDone());
+
+            // set the pool size
+            final int numLocalBuffers = 5;
+            localBufferPool.setNumBuffers(numLocalBuffers);
+            assertTrue(availableFuture.isDone());
+            assertTrue(localBufferPool.isAvailable());
+
+            // drain the local buffer pool
+            final Deque<Buffer> buffers = new ArrayDeque<>(LocalBufferPoolTest.numBuffers);
+            for (int i = 0; i < numLocalBuffers - 1; i++) {
+                assertTrue(localBufferPool.isAvailable());
+                buffers.add(checkNotNull(localBufferPool.requestBuffer()));
+            }
+            assertFalse(localBufferPool.isAvailable());
+
+            buffers.pop().recycleBuffer();
+            assertTrue(localBufferPool.isAvailable());
+
+            // recycle the requested segments to global buffer pool
+            for (final Buffer buffer : buffers) {
+                buffer.recycleBuffer();
+            }
+            assertTrue(localBufferPool.isAvailable());
+
+            // scale down (first buffer still taken), but there should still be one segment locally
+            // available
+            localBufferPool.setNumBuffers(2);
+            assertTrue(localBufferPool.isAvailable());
+
+            final Buffer buffer2 = checkNotNull(localBufferPool.requestBuffer());
+            assertFalse(localBufferPool.isAvailable());
+
+            buffer2.recycleBuffer();
+            assertTrue(localBufferPool.isAvailable());
+
+            // reset the pool size
+            localBufferPool.setNumBuffers(1);
+            assertFalse(localBufferPool.getAvailableFuture().isDone());
+            // recycle the requested buffer
+        }
+
+        assertTrue(localBufferPool.isAvailable());
+        assertTrue(localBufferPool.getAvailableFuture().isDone());
+    }
+
+    /** For FLINK-20547: https://issues.apache.org/jira/browse/FLINK-20547. */
+    @Test
+    public void testConsistentAvailability() throws Exception {
+        NetworkBufferPool globalPool = new TestNetworkBufferPool(numBuffers, memorySegmentSize);
+        try {
+            BufferPool localPool = new LocalBufferPool(globalPool, 1);
+            MemorySegment segment = localPool.requestMemorySegmentBlocking();
+            localPool.setNumBuffers(2);
+
+            localPool.recycle(segment);
+            localPool.lazyDestroy();
+        } finally {
+            globalPool.destroy();
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------------
+
+    private int getNumRequestedFromMemorySegmentPool() {
+        return networkBufferPool.getTotalNumberOfMemorySegments()
+                - networkBufferPool.getNumberOfAvailableMemorySegments();
+    }
+
+    private static class CountBufferListener implements BufferListener {
+
+        private final AtomicInteger times = new AtomicInteger(0);
+
+        @Override
+        public boolean notifyBufferAvailable(Buffer buffer) {
+            times.incrementAndGet();
+            buffer.recycleBuffer();
+            return true;
+        }
+
+        @Override
+        public void notifyBufferDestroyed() {}
+
+        int getCount() {
+            return times.get();
+        }
+    }
+
+    private static class BufferRequesterTask implements Callable<Boolean> {
+
+        private final BufferProvider bufferProvider;
+
+        private final int numBuffersToRequest;
+
+        private BufferRequesterTask(BufferProvider bufferProvider, int numBuffersToRequest) {
+            this.bufferProvider = bufferProvider;
+            this.numBuffersToRequest = numBuffersToRequest;
+        }
+
+        @Override
+        public Boolean call() throws Exception {
+            try {
+                for (int i = 0; i < numBuffersToRequest; i++) {
+                    Buffer buffer = checkNotNull(bufferProvider.requestBuffer());
+                    buffer.recycleBuffer();
+                }
+            } catch (Throwable t) {
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    private static class TestNetworkBufferPool extends NetworkBufferPool {
+
+        private int requestCounter;
+
+        public TestNetworkBufferPool(int numberOfSegmentsToAllocate, int segmentSize) {
+            super(numberOfSegmentsToAllocate, segmentSize);
+        }
+
+        @Nullable
+        @Override
+        public MemorySegment requestMemorySegment() {
+            if (requestCounter++ == 1) {
+                return null;
+            }
+            return super.requestMemorySegment();
+        }
+    }
 }

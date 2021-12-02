@@ -19,342 +19,389 @@
 package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.runtime.jobgraph.JobStatus;
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.SharedStateRegistry;
+import org.apache.flink.runtime.state.testutils.TestCompletedCheckpointStorageLocation;
 import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.concurrent.Executors;
+
 import org.junit.Assert;
 import org.junit.Test;
 
-import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-/**
- * Test for basic {@link CompletedCheckpointStore} contract.
- */
+/** Test for basic {@link CompletedCheckpointStore} contract. */
 public abstract class CompletedCheckpointStoreTest extends TestLogger {
 
-	/**
-	 * Creates the {@link CompletedCheckpointStore} implementation to be tested.
-	 */
-	protected abstract CompletedCheckpointStore createCompletedCheckpoints(
-			int maxNumberOfCheckpointsToRetain) throws Exception;
+    /** Creates the {@link CompletedCheckpointStore} implementation to be tested. */
+    protected abstract CompletedCheckpointStore createRecoveredCompletedCheckpointStore(
+            int maxNumberOfCheckpointsToRetain, Executor executor) throws Exception;
 
-	// ---------------------------------------------------------------------------------------------
+    protected CompletedCheckpointStore createRecoveredCompletedCheckpointStore(
+            int maxNumberOfCheckpointsToRetain) throws Exception {
+        return createRecoveredCompletedCheckpointStore(
+                maxNumberOfCheckpointsToRetain, Executors.directExecutor());
+    }
 
-	/**
-	 * Tests that at least one checkpoint needs to be retained.
-	 */
-	@Test(expected = Exception.class)
-	public void testExceptionOnNoRetainedCheckpoints() throws Exception {
-		createCompletedCheckpoints(0);
-	}
+    // ---------------------------------------------------------------------------------------------
 
-	/**
-	 * Tests adding and getting a checkpoint.
-	 */
-	@Test
-	public void testAddAndGetLatestCheckpoint() throws Exception {
-		SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
-		CompletedCheckpointStore checkpoints = createCompletedCheckpoints(4);
-		
-		// Empty state
-		assertEquals(0, checkpoints.getNumberOfRetainedCheckpoints());
-		assertEquals(0, checkpoints.getAllCheckpoints().size());
+    /** Tests that at least one checkpoint needs to be retained. */
+    @Test(expected = Exception.class)
+    public void testExceptionOnNoRetainedCheckpoints() throws Exception {
+        createRecoveredCompletedCheckpointStore(0);
+    }
 
-		TestCompletedCheckpoint[] expected = new TestCompletedCheckpoint[] {
-				createCheckpoint(0, sharedStateRegistry), createCheckpoint(1, sharedStateRegistry) };
+    /** Tests adding and getting a checkpoint. */
+    @Test
+    public void testAddAndGetLatestCheckpoint() throws Exception {
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
+        CompletedCheckpointStore checkpoints = createRecoveredCompletedCheckpointStore(4);
 
-		// Add and get latest
-		checkpoints.addCheckpoint(expected[0]);
-		assertEquals(1, checkpoints.getNumberOfRetainedCheckpoints());
-		verifyCheckpoint(expected[0], checkpoints.getLatestCheckpoint());
+        // Empty state
+        assertEquals(0, checkpoints.getNumberOfRetainedCheckpoints());
+        assertEquals(0, checkpoints.getAllCheckpoints().size());
 
-		checkpoints.addCheckpoint(expected[1]);
-		assertEquals(2, checkpoints.getNumberOfRetainedCheckpoints());
-		verifyCheckpoint(expected[1], checkpoints.getLatestCheckpoint());
-	}
+        TestCompletedCheckpoint[] expected =
+                new TestCompletedCheckpoint[] {
+                    createCheckpoint(0, sharedStateRegistry),
+                    createCheckpoint(1, sharedStateRegistry)
+                };
 
-	/**
-	 * Tests that adding more checkpoints than retained discards the correct checkpoints (using
-	 * the correct class loader).
-	 */
-	@Test
-	public void testAddCheckpointMoreThanMaxRetained() throws Exception {
-		SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
-		CompletedCheckpointStore checkpoints = createCompletedCheckpoints(1);
+        // Add and get latest
+        checkpoints.addCheckpoint(expected[0], new CheckpointsCleaner(), () -> {});
+        assertEquals(1, checkpoints.getNumberOfRetainedCheckpoints());
+        verifyCheckpoint(expected[0], checkpoints.getLatestCheckpoint());
 
-		TestCompletedCheckpoint[] expected = new TestCompletedCheckpoint[] {
-				createCheckpoint(0, sharedStateRegistry), createCheckpoint(1, sharedStateRegistry),
-				createCheckpoint(2, sharedStateRegistry), createCheckpoint(3, sharedStateRegistry)
-		};
+        checkpoints.addCheckpoint(expected[1], new CheckpointsCleaner(), () -> {});
+        assertEquals(2, checkpoints.getNumberOfRetainedCheckpoints());
+        verifyCheckpoint(expected[1], checkpoints.getLatestCheckpoint());
+    }
 
-		// Add checkpoints
-		checkpoints.addCheckpoint(expected[0]);
-		assertEquals(1, checkpoints.getNumberOfRetainedCheckpoints());
+    /**
+     * Tests that adding more checkpoints than retained discards the correct checkpoints (using the
+     * correct class loader).
+     */
+    @Test
+    public void testAddCheckpointMoreThanMaxRetained() throws Exception {
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
+        CompletedCheckpointStore checkpoints = createRecoveredCompletedCheckpointStore(1);
 
-		for (int i = 1; i < expected.length; i++) {
-			Collection<OperatorState> taskStates = expected[i - 1].getOperatorStates().values();
+        TestCompletedCheckpoint[] expected =
+                new TestCompletedCheckpoint[] {
+                    createCheckpoint(0, sharedStateRegistry),
+                            createCheckpoint(1, sharedStateRegistry),
+                    createCheckpoint(2, sharedStateRegistry),
+                            createCheckpoint(3, sharedStateRegistry)
+                };
 
-			checkpoints.addCheckpoint(expected[i]);
+        // Add checkpoints
+        checkpoints.addCheckpoint(expected[0], new CheckpointsCleaner(), () -> {});
+        assertEquals(1, checkpoints.getNumberOfRetainedCheckpoints());
 
-			// The ZooKeeper implementation discards asynchronously
-			expected[i - 1].awaitDiscard();
-			assertTrue(expected[i - 1].isDiscarded());
-			assertEquals(1, checkpoints.getNumberOfRetainedCheckpoints());
-		}
-	}
+        for (int i = 1; i < expected.length; i++) {
+            checkpoints.addCheckpoint(expected[i], new CheckpointsCleaner(), () -> {});
 
-	/**
-	 * Tests that
-	 * <ul>
-	 * <li>{@link CompletedCheckpointStore#getLatestCheckpoint()} returns <code>null</code>,</li>
-	 * <li>{@link CompletedCheckpointStore#getAllCheckpoints()} returns an empty list,</li>
-	 * <li>{@link CompletedCheckpointStore#getNumberOfRetainedCheckpoints()} returns 0.</li>
-	 * </ul>
-	 */
-	@Test
-	public void testEmptyState() throws Exception {
-		CompletedCheckpointStore checkpoints = createCompletedCheckpoints(1);
+            // The ZooKeeper implementation discards asynchronously
+            expected[i - 1].awaitDiscard();
+            assertTrue(expected[i - 1].isDiscarded());
+            assertEquals(1, checkpoints.getNumberOfRetainedCheckpoints());
+        }
+    }
 
-		assertNull(checkpoints.getLatestCheckpoint());
-		assertEquals(0, checkpoints.getAllCheckpoints().size());
-		assertEquals(0, checkpoints.getNumberOfRetainedCheckpoints());
-	}
+    /**
+     * Tests that
+     *
+     * <ul>
+     *   <li>{@link CompletedCheckpointStore#getLatestCheckpoint()} returns <code>null</code> ,
+     *   <li>{@link CompletedCheckpointStore#getAllCheckpoints()} returns an empty list,
+     *   <li>{@link CompletedCheckpointStore#getNumberOfRetainedCheckpoints()} returns 0.
+     * </ul>
+     */
+    @Test
+    public void testEmptyState() throws Exception {
+        CompletedCheckpointStore checkpoints = createRecoveredCompletedCheckpointStore(1);
 
-	/**
-	 * Tests that all added checkpoints are returned.
-	 */
-	@Test
-	public void testGetAllCheckpoints() throws Exception {
-		SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
-		CompletedCheckpointStore checkpoints = createCompletedCheckpoints(4);
+        assertNull(checkpoints.getLatestCheckpoint());
+        assertEquals(0, checkpoints.getAllCheckpoints().size());
+        assertEquals(0, checkpoints.getNumberOfRetainedCheckpoints());
+    }
 
-		TestCompletedCheckpoint[] expected = new TestCompletedCheckpoint[] {
-				createCheckpoint(0, sharedStateRegistry), createCheckpoint(1, sharedStateRegistry),
-				createCheckpoint(2, sharedStateRegistry), createCheckpoint(3, sharedStateRegistry)
-		};
+    /** Tests that all added checkpoints are returned. */
+    @Test
+    public void testGetAllCheckpoints() throws Exception {
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
+        CompletedCheckpointStore checkpoints = createRecoveredCompletedCheckpointStore(4);
 
-		for (TestCompletedCheckpoint checkpoint : expected) {
-			checkpoints.addCheckpoint(checkpoint);
-		}
+        TestCompletedCheckpoint[] expected =
+                new TestCompletedCheckpoint[] {
+                    createCheckpoint(0, sharedStateRegistry),
+                            createCheckpoint(1, sharedStateRegistry),
+                    createCheckpoint(2, sharedStateRegistry),
+                            createCheckpoint(3, sharedStateRegistry)
+                };
 
-		List<CompletedCheckpoint> actual = checkpoints.getAllCheckpoints();
+        for (TestCompletedCheckpoint checkpoint : expected) {
+            checkpoints.addCheckpoint(checkpoint, new CheckpointsCleaner(), () -> {});
+        }
 
-		assertEquals(expected.length, actual.size());
+        List<CompletedCheckpoint> actual = checkpoints.getAllCheckpoints();
 
-		for (int i = 0; i < expected.length; i++) {
-			assertEquals(expected[i], actual.get(i));
-		}
-	}
+        assertEquals(expected.length, actual.size());
 
-	/**
-	 * Tests that all checkpoints are discarded (using the correct class loader).
-	 */
-	@Test
-	public void testDiscardAllCheckpoints() throws Exception {
-		SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
-		CompletedCheckpointStore checkpoints = createCompletedCheckpoints(4);
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], actual.get(i));
+        }
+    }
 
-		TestCompletedCheckpoint[] expected = new TestCompletedCheckpoint[] {
-				createCheckpoint(0, sharedStateRegistry), createCheckpoint(1, sharedStateRegistry),
-				createCheckpoint(2, sharedStateRegistry), createCheckpoint(3, sharedStateRegistry)
-		};
+    /** Tests that all checkpoints are discarded (using the correct class loader). */
+    @Test
+    public void testDiscardAllCheckpoints() throws Exception {
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
+        CompletedCheckpointStore checkpoints = createRecoveredCompletedCheckpointStore(4);
 
-		for (TestCompletedCheckpoint checkpoint : expected) {
-			checkpoints.addCheckpoint(checkpoint);
-		}
+        TestCompletedCheckpoint[] expected =
+                new TestCompletedCheckpoint[] {
+                    createCheckpoint(0, sharedStateRegistry),
+                            createCheckpoint(1, sharedStateRegistry),
+                    createCheckpoint(2, sharedStateRegistry),
+                            createCheckpoint(3, sharedStateRegistry)
+                };
 
-		checkpoints.shutdown(JobStatus.FINISHED);
+        for (TestCompletedCheckpoint checkpoint : expected) {
+            checkpoints.addCheckpoint(checkpoint, new CheckpointsCleaner(), () -> {});
+        }
 
-		// Empty state
-		assertNull(checkpoints.getLatestCheckpoint());
-		assertEquals(0, checkpoints.getAllCheckpoints().size());
-		assertEquals(0, checkpoints.getNumberOfRetainedCheckpoints());
+        checkpoints.shutdown(JobStatus.FINISHED, new CheckpointsCleaner());
 
-		// All have been discarded
-		for (TestCompletedCheckpoint checkpoint : expected) {
-			// The ZooKeeper implementation discards asynchronously
-			checkpoint.awaitDiscard();
-			assertTrue(checkpoint.isDiscarded());
-		}
-	}
+        // Empty state
+        assertNull(checkpoints.getLatestCheckpoint());
+        assertEquals(0, checkpoints.getAllCheckpoints().size());
+        assertEquals(0, checkpoints.getNumberOfRetainedCheckpoints());
 
-	// ---------------------------------------------------------------------------------------------
+        // All have been discarded
+        for (TestCompletedCheckpoint checkpoint : expected) {
+            // The ZooKeeper implementation discards asynchronously
+            checkpoint.awaitDiscard();
+            assertTrue(checkpoint.isDiscarded());
+        }
+    }
 
-	protected TestCompletedCheckpoint createCheckpoint(
-		int id,
-		SharedStateRegistry sharedStateRegistry) throws IOException {
+    @Test
+    public void testAcquireLatestCompletedCheckpointId() throws Exception {
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
+        CompletedCheckpointStore checkpoints = createRecoveredCompletedCheckpointStore(1);
+        assertEquals(0, checkpoints.getLatestCheckpointId());
 
-		int numberOfStates = 4;
-		CheckpointProperties props = CheckpointProperties.forStandardCheckpoint();
+        checkpoints.addCheckpoint(
+                createCheckpoint(2, sharedStateRegistry), new CheckpointsCleaner(), () -> {});
+        assertEquals(2, checkpoints.getLatestCheckpointId());
 
-		OperatorID operatorID = new OperatorID();
+        checkpoints.addCheckpoint(
+                createCheckpoint(4, sharedStateRegistry), new CheckpointsCleaner(), () -> {});
+        assertEquals(4, checkpoints.getLatestCheckpointId());
+    }
 
-		Map<OperatorID, OperatorState> operatorGroupState = new HashMap<>();
-		OperatorState operatorState = new OperatorState(operatorID, numberOfStates, numberOfStates);
-		operatorGroupState.put(operatorID, operatorState);
+    // ---------------------------------------------------------------------------------------------
 
-		for (int i = 0; i < numberOfStates; i++) {
-			OperatorSubtaskState subtaskState =
-				new TestOperatorSubtaskState();
+    public static TestCompletedCheckpoint createCheckpoint(
+            long id, SharedStateRegistry sharedStateRegistry) {
 
-			operatorState.putState(i, subtaskState);
-		}
+        int numberOfStates = 4;
+        CheckpointProperties props =
+                CheckpointProperties.forCheckpoint(
+                        CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION);
 
-		operatorState.registerSharedStates(sharedStateRegistry);
+        OperatorID operatorID = new OperatorID();
 
-		return new TestCompletedCheckpoint(new JobID(), id, 0, operatorGroupState, props);
-	}
+        Map<OperatorID, OperatorState> operatorGroupState = new HashMap<>();
+        OperatorState operatorState = new OperatorState(operatorID, numberOfStates, numberOfStates);
+        operatorGroupState.put(operatorID, operatorState);
 
-	protected void verifyCheckpointRegistered(Collection<OperatorState> operatorStates, SharedStateRegistry registry) {
-		for (OperatorState operatorState : operatorStates) {
-			for (OperatorSubtaskState subtaskState : operatorState.getStates()) {
-				Assert.assertTrue(((TestOperatorSubtaskState)subtaskState).registered);
-			}
-		}
-	}
+        for (int i = 0; i < numberOfStates; i++) {
+            OperatorSubtaskState subtaskState = new TestOperatorSubtaskState();
 
-	protected void verifyCheckpointDiscarded(Collection<OperatorState> operatorStates) {
-		for (OperatorState operatorState : operatorStates) {
-			for (OperatorSubtaskState subtaskState : operatorState.getStates()) {
-				Assert.assertTrue(((TestOperatorSubtaskState)subtaskState).discarded);
-			}
-		}
-	}
+            operatorState.putState(i, subtaskState);
+        }
 
-	private void verifyCheckpoint(CompletedCheckpoint expected, CompletedCheckpoint actual) {
-		assertEquals(expected, actual);
-	}
+        operatorState.registerSharedStates(sharedStateRegistry);
 
-	/**
-	 * A test {@link CompletedCheckpoint}. We want to verify that the correct class loader is
-	 * used when discarding. Spying on a regular {@link CompletedCheckpoint} instance with
-	 * Mockito doesn't work, because it it breaks serializability.
-	 */
-	protected static class TestCompletedCheckpoint extends CompletedCheckpoint {
+        return new TestCompletedCheckpoint(new JobID(), id, 0, operatorGroupState, props);
+    }
 
-		private static final long serialVersionUID = 4211419809665983026L;
+    protected void verifyCheckpointRegistered(
+            Collection<OperatorState> operatorStates, SharedStateRegistry registry) {
+        for (OperatorState operatorState : operatorStates) {
+            for (OperatorSubtaskState subtaskState : operatorState.getStates()) {
+                Assert.assertTrue(((TestOperatorSubtaskState) subtaskState).registered);
+            }
+        }
+    }
 
-		private boolean isDiscarded;
+    public static void verifyCheckpointDiscarded(TestCompletedCheckpoint completedCheckpoint) {
+        assertTrue(completedCheckpoint.isDiscarded());
+        verifyCheckpointDiscarded(completedCheckpoint.getOperatorStates().values());
+    }
 
-		// Latch for test variants which discard asynchronously
-		private transient final CountDownLatch discardLatch = new CountDownLatch(1);
+    protected static void verifyCheckpointDiscarded(Collection<OperatorState> operatorStates) {
+        for (OperatorState operatorState : operatorStates) {
+            for (OperatorSubtaskState subtaskState : operatorState.getStates()) {
+                Assert.assertTrue(((TestOperatorSubtaskState) subtaskState).discarded);
+            }
+        }
+    }
 
-		public TestCompletedCheckpoint(
-			JobID jobId,
-			long checkpointId,
-			long timestamp,
-			Map<OperatorID, OperatorState> operatorGroupState,
-			CheckpointProperties props) {
-			super(jobId, checkpointId, timestamp, Long.MAX_VALUE, operatorGroupState, null, props, null, null);
-		}
+    private void verifyCheckpoint(CompletedCheckpoint expected, CompletedCheckpoint actual) {
+        assertEquals(expected, actual);
+    }
 
-		@Override
-		public boolean discardOnSubsume() throws Exception {
-			if (super.discardOnSubsume()) {
-				discard();
-				return true;
-			} else {
-				return false;
-			}
-		}
+    /**
+     * A test {@link CompletedCheckpoint}. We want to verify that the correct class loader is used
+     * when discarding. Spying on a regular {@link CompletedCheckpoint} instance with Mockito
+     * doesn't work, because it it breaks serializability.
+     */
+    protected static class TestCompletedCheckpoint extends CompletedCheckpoint {
 
-		@Override
-		public boolean discardOnShutdown(JobStatus jobStatus) throws Exception {
-			if (super.discardOnShutdown(jobStatus)) {
-				discard();
-				return true;
-			} else {
-				return false;
-			}
-		}
+        private static final long serialVersionUID = 4211419809665983026L;
 
-		void discard() {
-			if (!isDiscarded) {
-				this.isDiscarded = true;
+        private boolean isDiscarded;
 
-				if (discardLatch != null) {
-					discardLatch.countDown();
-				}
-			}
-		}
+        // Latch for test variants which discard asynchronously
+        private final transient CountDownLatch discardLatch = new CountDownLatch(1);
 
-		public boolean isDiscarded() {
-			return isDiscarded;
-		}
+        public TestCompletedCheckpoint(
+                JobID jobId,
+                long checkpointId,
+                long timestamp,
+                Map<OperatorID, OperatorState> operatorGroupState,
+                CheckpointProperties props) {
 
-		public void awaitDiscard() throws InterruptedException {
-			if (discardLatch != null) {
-				discardLatch.await();
-			}
-		}
+            super(
+                    jobId,
+                    checkpointId,
+                    timestamp,
+                    Long.MAX_VALUE,
+                    operatorGroupState,
+                    null,
+                    props,
+                    new TestCompletedCheckpointStorageLocation());
+        }
 
-		public boolean awaitDiscard(long timeout) throws InterruptedException {
-			if (discardLatch != null) {
-				return discardLatch.await(timeout, TimeUnit.MILLISECONDS);
-			} else {
-				return false;
-			}
-		}
+        @Override
+        public boolean discardOnSubsume() throws Exception {
+            if (super.discardOnSubsume()) {
+                discard();
+                return true;
+            } else {
+                return false;
+            }
+        }
 
-		@Override
-		public boolean equals(Object o) {
-			if (this == o) return true;
-			if (o == null || getClass() != o.getClass()) return false;
+        @Override
+        public boolean discardOnShutdown(JobStatus jobStatus) throws Exception {
+            if (super.discardOnShutdown(jobStatus)) {
+                discard();
+                return true;
+            } else {
+                return false;
+            }
+        }
 
-			TestCompletedCheckpoint that = (TestCompletedCheckpoint) o;
+        @Override
+        public void discard() throws Exception {
+            super.discard();
+            if (!isDiscarded) {
+                this.isDiscarded = true;
 
-			return getJobId().equals(that.getJobId())
-					&& getCheckpointID() == that.getCheckpointID();
-		}
+                if (discardLatch != null) {
+                    discardLatch.countDown();
+                }
+            }
+        }
 
-		@Override
-		public int hashCode() {
-			return getJobId().hashCode() + (int) getCheckpointID();
-		}
-	}
+        public boolean isDiscarded() {
+            return isDiscarded;
+        }
 
-	static class TestOperatorSubtaskState extends OperatorSubtaskState {
-		private static final long serialVersionUID = 522580433699164230L;
+        public void awaitDiscard() throws InterruptedException {
+            if (discardLatch != null) {
+                discardLatch.await();
+            }
+        }
 
-		boolean registered;
-		boolean discarded;
+        public boolean awaitDiscard(long timeout) throws InterruptedException {
+            if (discardLatch != null) {
+                return discardLatch.await(timeout, TimeUnit.MILLISECONDS);
+            } else {
+                return false;
+            }
+        }
 
-		public TestOperatorSubtaskState() {
-			super();
-			this.registered = false;
-			this.discarded = false;
-		}
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
 
-		@Override
-		public void discardState() {
-			super.discardState();
-			Assert.assertFalse(discarded);
-			discarded = true;
-			registered = false;
-		}
+            TestCompletedCheckpoint that = (TestCompletedCheckpoint) o;
 
-		@Override
-		public void registerSharedStates(SharedStateRegistry sharedStateRegistry) {
-			super.registerSharedStates(sharedStateRegistry);
-			Assert.assertFalse(discarded);
-			registered = true;
-		}
+            return getJobId().equals(that.getJobId())
+                    && getCheckpointID() == that.getCheckpointID();
+        }
 
-		public void reset() {
-			registered = false;
-			discarded = false;
-		}
-	}
+        @Override
+        public int hashCode() {
+            return getJobId().hashCode() + (int) getCheckpointID();
+        }
+    }
 
+    public static class TestOperatorSubtaskState extends OperatorSubtaskState {
+        private static final long serialVersionUID = 522580433699164230L;
+
+        boolean registered;
+        boolean discarded;
+
+        public TestOperatorSubtaskState() {
+            super();
+            this.registered = false;
+            this.discarded = false;
+        }
+
+        @Override
+        public void discardState() {
+            super.discardState();
+            Assert.assertFalse(discarded);
+            discarded = true;
+            registered = false;
+        }
+
+        @Override
+        public void registerSharedStates(SharedStateRegistry sharedStateRegistry) {
+            super.registerSharedStates(sharedStateRegistry);
+            Assert.assertFalse(discarded);
+            registered = true;
+        }
+
+        public void reset() {
+            registered = false;
+            discarded = false;
+        }
+
+        public boolean isRegistered() {
+            return registered;
+        }
+
+        public boolean isDiscarded() {
+            return discarded;
+        }
+    }
 }

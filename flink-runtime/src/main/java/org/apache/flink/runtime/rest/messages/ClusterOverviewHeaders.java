@@ -19,54 +19,59 @@
 package org.apache.flink.runtime.rest.messages;
 
 import org.apache.flink.runtime.rest.HttpMethodWrapper;
-import org.apache.flink.runtime.rest.handler.legacy.ClusterOverviewHandler;
+import org.apache.flink.runtime.rest.handler.cluster.ClusterOverviewHandler;
 import org.apache.flink.runtime.rest.handler.legacy.messages.ClusterOverviewWithVersion;
 
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
-/**
- * Message headers for the {@link ClusterOverviewHandler}.
- */
-public final class ClusterOverviewHeaders implements MessageHeaders<EmptyRequestBody, ClusterOverviewWithVersion, EmptyMessageParameters> {
+/** Message headers for the {@link ClusterOverviewHandler}. */
+public final class ClusterOverviewHeaders
+        implements MessageHeaders<
+                EmptyRequestBody, ClusterOverviewWithVersion, EmptyMessageParameters> {
 
-	private static final ClusterOverviewHeaders INSTANCE = new ClusterOverviewHeaders();
+    private static final ClusterOverviewHeaders INSTANCE = new ClusterOverviewHeaders();
 
-	public static final String URL = "/overview";
+    public static final String URL = "/overview";
 
-	// make this class a singleton
-	private ClusterOverviewHeaders() {}
+    // make this class a singleton
+    private ClusterOverviewHeaders() {}
 
-	@Override
-	public Class<EmptyRequestBody> getRequestClass() {
-		return EmptyRequestBody.class;
-	}
+    @Override
+    public Class<EmptyRequestBody> getRequestClass() {
+        return EmptyRequestBody.class;
+    }
 
-	@Override
-	public HttpMethodWrapper getHttpMethod() {
-		return HttpMethodWrapper.GET;
-	}
+    @Override
+    public HttpMethodWrapper getHttpMethod() {
+        return HttpMethodWrapper.GET;
+    }
 
-	@Override
-	public String getTargetRestEndpointURL() {
-		return URL;
-	}
+    @Override
+    public String getTargetRestEndpointURL() {
+        return URL;
+    }
 
-	@Override
-	public Class<ClusterOverviewWithVersion> getResponseClass() {
-		return ClusterOverviewWithVersion.class;
-	}
+    @Override
+    public Class<ClusterOverviewWithVersion> getResponseClass() {
+        return ClusterOverviewWithVersion.class;
+    }
 
-	@Override
-	public HttpResponseStatus getResponseStatusCode() {
-		return HttpResponseStatus.OK;
-	}
+    @Override
+    public HttpResponseStatus getResponseStatusCode() {
+        return HttpResponseStatus.OK;
+    }
 
-	@Override
-	public EmptyMessageParameters getUnresolvedMessageParameters() {
-		return EmptyMessageParameters.getInstance();
-	}
+    @Override
+    public EmptyMessageParameters getUnresolvedMessageParameters() {
+        return EmptyMessageParameters.getInstance();
+    }
 
-	public static ClusterOverviewHeaders getInstance() {
-		return INSTANCE;
-	}
+    public static ClusterOverviewHeaders getInstance() {
+        return INSTANCE;
+    }
+
+    @Override
+    public String getDescription() {
+        return "Returns an overview over the Flink cluster.";
+    }
 }

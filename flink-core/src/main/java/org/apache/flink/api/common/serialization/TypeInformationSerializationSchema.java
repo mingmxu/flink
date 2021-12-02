@@ -27,105 +27,105 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 
 import java.io.IOException;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 /**
- * A serialization and deserialization schema that uses Flink's serialization stack to
- * transform typed from and to byte arrays.
+ * A serialization and deserialization schema that uses Flink's serialization stack to transform
+ * typed from and to byte arrays.
  *
  * @param <T> The type to be serialized.
  */
 @Public
-public class TypeInformationSerializationSchema<T> implements DeserializationSchema<T>, SerializationSchema<T> {
+public class TypeInformationSerializationSchema<T>
+        implements DeserializationSchema<T>, SerializationSchema<T> {
 
-	private static final long serialVersionUID = -5359448468131559102L;
+    private static final long serialVersionUID = -5359448468131559102L;
 
-	/** The serializer for the actual de-/serialization. */
-	private final TypeSerializer<T> serializer;
+    /** The type information, to be returned by {@link #getProducedType()}. */
+    private final TypeInformation<T> typeInfo;
 
-	/** The reusable output serialization buffer. */
-	private transient DataOutputSerializer dos;
+    /** The serializer for the actual de-/serialization. */
+    private final TypeSerializer<T> serializer;
 
-	/** The reusable input deserialization buffer. */
-	private transient DataInputDeserializer dis;
+    /** The reusable output serialization buffer. */
+    private transient DataOutputSerializer dos;
 
-	/**
-	 * The type information, to be returned by {@link #getProducedType()}. It is transient, because
-	 * it is not serializable. Note that this means that the type information is not available at
-	 * runtime, but only prior to the first serialization / deserialization.
-	 */
-	private transient TypeInformation<T> typeInfo;
+    /** The reusable input deserialization buffer. */
+    private transient DataInputDeserializer dis;
 
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
-	/**
-	 * Creates a new de-/serialization schema for the given type.
-	 *
-	 * @param typeInfo The type information for the type de-/serialized by this schema.
-	 * @param ec The execution config, which is used to parametrize the type serializers.
-	 */
-	public TypeInformationSerializationSchema(TypeInformation<T> typeInfo, ExecutionConfig ec) {
-		this.typeInfo = typeInfo;
-		this.serializer = typeInfo.createSerializer(ec);
-	}
+    /**
+     * Creates a new de-/serialization schema for the given type.
+     *
+     * @param typeInfo The type information for the type de-/serialized by this schema.
+     * @param ec The execution config, which is used to parametrize the type serializers.
+     */
+    public TypeInformationSerializationSchema(TypeInformation<T> typeInfo, ExecutionConfig ec) {
+        this.typeInfo = checkNotNull(typeInfo, "typeInfo");
+        this.serializer = typeInfo.createSerializer(ec);
+    }
 
-	// ------------------------------------------------------------------------
+    /**
+     * Creates a new de-/serialization schema for the given type.
+     *
+     * @param typeInfo The type information for the type de-/serialized by this schema.
+     * @param serializer The serializer to use for de-/serialization.
+     */
+    public TypeInformationSerializationSchema(
+            TypeInformation<T> typeInfo, TypeSerializer<T> serializer) {
+        this.typeInfo = checkNotNull(typeInfo, "typeInfo");
+        this.serializer = checkNotNull(serializer, "serializer");
+    }
 
-	@Override
-	public T deserialize(byte[] message) {
-		if (dis != null) {
-			dis.setBuffer(message, 0, message.length);
-		} else {
-			dis = new DataInputDeserializer(message, 0, message.length);
-		}
+    // ------------------------------------------------------------------------
 
-		try {
-			return serializer.deserialize(dis);
-		}
-		catch (IOException e) {
-			throw new RuntimeException("Unable to deserialize message", e);
-		}
-	}
+    @Override
+    public T deserialize(byte[] message) {
+        if (dis != null) {
+            dis.setBuffer(message);
+        } else {
+            dis = new DataInputDeserializer(message);
+        }
 
-	/**
-	 * This schema never considers an element to signal end-of-stream, so this method returns always false.
-	 * @param nextElement The element to test for the end-of-stream signal.
-	 * @return Returns false.
-	 */
-	@Override
-	public boolean isEndOfStream(T nextElement) {
-		return false;
-	}
+        try {
+            return serializer.deserialize(dis);
+        } catch (IOException e) {
+            throw new RuntimeException("Unable to deserialize message", e);
+        }
+    }
 
-	@Override
-	public byte[] serialize(T element) {
-		if (dos == null) {
-			dos = new DataOutputSerializer(16);
-		}
+    /**
+     * This schema never considers an element to signal end-of-stream, so this method returns always
+     * false.
+     *
+     * @param nextElement The element to test for the end-of-stream signal.
+     * @return Returns false.
+     */
+    @Override
+    public boolean isEndOfStream(T nextElement) {
+        return false;
+    }
 
-		try {
-			serializer.serialize(element, dos);
-		}
-		catch (IOException e) {
-			throw new RuntimeException("Unable to serialize record", e);
-		}
+    @Override
+    public byte[] serialize(T element) {
+        if (dos == null) {
+            dos = new DataOutputSerializer(16);
+        }
 
-		byte[] ret = dos.getByteArray();
-		if (ret.length != dos.length()) {
-			byte[] n = new byte[dos.length()];
-			System.arraycopy(ret, 0, n, 0, dos.length());
-			ret = n;
-		}
-		dos.clear();
-		return ret;
-	}
+        try {
+            serializer.serialize(element, dos);
+        } catch (IOException e) {
+            throw new RuntimeException("Unable to serialize record", e);
+        }
 
-	@Override
-	public TypeInformation<T> getProducedType() {
-		if (typeInfo != null) {
-			return typeInfo;
-		}
-		else {
-			throw new IllegalStateException(
-					"The type information is not available after this class has been serialized and distributed.");
-		}
-	}
+        byte[] ret = dos.getCopyOfBuffer();
+        dos.clear();
+        return ret;
+    }
+
+    @Override
+    public TypeInformation<T> getProducedType() {
+        return typeInfo;
+    }
 }

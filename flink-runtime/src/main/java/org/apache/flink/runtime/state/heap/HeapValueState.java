@@ -18,57 +18,88 @@
 
 package org.apache.flink.runtime.state.heap;
 
+import org.apache.flink.api.common.state.State;
+import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
-import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.runtime.state.internal.InternalValueState;
 
 /**
- * Heap-backed partitioned {@link org.apache.flink.api.common.state.ValueState} that is snapshotted
- * into files.
+ * Heap-backed partitioned {@link ValueState} that is snapshotted into files.
  *
  * @param <K> The type of the key.
  * @param <N> The type of the namespace.
  * @param <V> The type of the value.
  */
-public class HeapValueState<K, N, V>
-		extends AbstractHeapState<K, N, V, ValueState<V>, ValueStateDescriptor<V>>
-		implements InternalValueState<N, V> {
+class HeapValueState<K, N, V> extends AbstractHeapState<K, N, V>
+        implements InternalValueState<K, N, V> {
 
-	/**
-	 * Creates a new key/value state for the given hash map of key/value pairs.
-	 *
-	 * @param stateDesc The state identifier for the state. This contains name
-	 *                           and can create a default state value.
-	 * @param stateTable The state tab;e to use in this kev/value state. May contain initial state.
-	 */
-	public HeapValueState(
-			ValueStateDescriptor<V> stateDesc,
-			StateTable<K, N, V> stateTable,
-			TypeSerializer<K> keySerializer,
-			TypeSerializer<N> namespaceSerializer) {
-		super(stateDesc, stateTable, keySerializer, namespaceSerializer);
-	}
+    /**
+     * Creates a new key/value state for the given hash map of key/value pairs.
+     *
+     * @param stateTable The state table for which this state is associated to.
+     * @param keySerializer The serializer for the keys.
+     * @param valueSerializer The serializer for the state.
+     * @param namespaceSerializer The serializer for the namespace.
+     * @param defaultValue The default value for the state.
+     */
+    private HeapValueState(
+            StateTable<K, N, V> stateTable,
+            TypeSerializer<K> keySerializer,
+            TypeSerializer<V> valueSerializer,
+            TypeSerializer<N> namespaceSerializer,
+            V defaultValue) {
+        super(stateTable, keySerializer, valueSerializer, namespaceSerializer, defaultValue);
+    }
 
-	@Override
-	public V value() {
-		final V result = stateTable.get(currentNamespace);
+    @Override
+    public TypeSerializer<K> getKeySerializer() {
+        return keySerializer;
+    }
 
-		if (result == null) {
-			return stateDesc.getDefaultValue();
-		}
+    @Override
+    public TypeSerializer<N> getNamespaceSerializer() {
+        return namespaceSerializer;
+    }
 
-		return result;
-	}
+    @Override
+    public TypeSerializer<V> getValueSerializer() {
+        return valueSerializer;
+    }
 
-	@Override
-	public void update(V value) {
+    @Override
+    public V value() {
+        final V result = stateTable.get(currentNamespace);
 
-		if (value == null) {
-			clear();
-			return;
-		}
+        if (result == null) {
+            return getDefaultValue();
+        }
 
-		stateTable.put(currentNamespace, value);
-	}
+        return result;
+    }
+
+    @Override
+    public void update(V value) {
+
+        if (value == null) {
+            clear();
+            return;
+        }
+
+        stateTable.put(currentNamespace, value);
+    }
+
+    @SuppressWarnings("unchecked")
+    static <K, N, SV, S extends State, IS extends S> IS create(
+            StateDescriptor<S, SV> stateDesc,
+            StateTable<K, N, SV> stateTable,
+            TypeSerializer<K> keySerializer) {
+        return (IS)
+                new HeapValueState<>(
+                        stateTable,
+                        keySerializer,
+                        stateTable.getStateSerializer(),
+                        stateTable.getNamespaceSerializer(),
+                        stateDesc.getDefaultValue());
+    }
 }

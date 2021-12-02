@@ -19,251 +19,231 @@
 package org.apache.flink.test.misc;
 
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.io.DiscardingOutputFormat;
 import org.apache.flink.client.program.ProgramInvocationException;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.runtime.client.JobExecutionException;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
-import org.apache.flink.test.util.TestEnvironment;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
+import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.types.Value;
 import org.apache.flink.util.TestLogger;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.Optional;
 
+import static org.apache.flink.util.ExceptionUtils.findThrowable;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /**
- * Test for proper error messages in case user-defined serialization is broken
- * and detected in the network stack.
+ * Test for proper error messages in case user-defined serialization is broken and detected in the
+ * network stack.
  */
 @SuppressWarnings("serial")
 public class CustomSerializationITCase extends TestLogger {
 
-	private static final int PARLLELISM = 5;
+    private static final int PARLLELISM = 5;
 
-	private static LocalFlinkMiniCluster cluster;
+    @ClassRule
+    public static final MiniClusterWithClientResource MINI_CLUSTER_RESOURCE =
+            new MiniClusterWithClientResource(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setConfiguration(getConfiguration())
+                            .setNumberTaskManagers(1)
+                            .setNumberSlotsPerTaskManager(PARLLELISM)
+                            .build());
 
-	private static TestEnvironment env;
+    public static Configuration getConfiguration() {
+        Configuration config = new Configuration();
+        config.set(TaskManagerOptions.MANAGED_MEMORY_SIZE, MemorySize.parse("30m"));
+        return config;
+    }
 
-	@BeforeClass
-	public static void startCluster() {
-		Configuration config = new Configuration();
-		config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, PARLLELISM);
-		config.setLong(TaskManagerOptions.MANAGED_MEMORY_SIZE, 30L);
-		cluster = new LocalFlinkMiniCluster(config, false);
-		cluster.start();
+    @Test
+    public void testIncorrectSerializer1() {
+        try {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(PARLLELISM);
 
-		env = new TestEnvironment(cluster, PARLLELISM, false);
-	}
+            env.generateSequence(1, 10 * PARLLELISM)
+                    .map(
+                            new MapFunction<Long, ConsumesTooMuch>() {
+                                @Override
+                                public ConsumesTooMuch map(Long value) throws Exception {
+                                    return new ConsumesTooMuch();
+                                }
+                            })
+                    .rebalance()
+                    .output(new DiscardingOutputFormat<ConsumesTooMuch>());
 
-	@AfterClass
-	public static void shutdownCluster() {
-		cluster.stop();
-		cluster = null;
-	}
+            env.execute();
+        } catch (JobExecutionException e) {
+            Optional<IOException> rootCause = findThrowable(e, IOException.class);
+            assertTrue(rootCause.isPresent());
+            assertTrue(rootCause.get().getMessage().contains("broken serialization"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-	@Test
-	public void testIncorrectSerializer1() {
-		try {
-			env.setParallelism(PARLLELISM);
-			env.getConfig().disableSysoutLogging();
+    @Test
+    public void testIncorrectSerializer2() {
+        try {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(PARLLELISM);
 
-			env
-				.generateSequence(1, 10 * PARLLELISM)
-				.map(new MapFunction<Long, ConsumesTooMuch>() {
-					@Override
-					public ConsumesTooMuch map(Long value) throws Exception {
-						return new ConsumesTooMuch();
-					}
-				})
-				.rebalance()
-				.output(new DiscardingOutputFormat<ConsumesTooMuch>());
+            env.generateSequence(1, 10 * PARLLELISM)
+                    .map(
+                            new MapFunction<Long, ConsumesTooMuchSpanning>() {
+                                @Override
+                                public ConsumesTooMuchSpanning map(Long value) throws Exception {
+                                    return new ConsumesTooMuchSpanning();
+                                }
+                            })
+                    .rebalance()
+                    .output(new DiscardingOutputFormat<ConsumesTooMuchSpanning>());
 
-			env.execute();
-		}
-		catch (JobExecutionException e) {
-			Throwable rootCause = e.getCause();
-			assertTrue(rootCause instanceof IOException);
-			assertTrue(rootCause.getMessage().contains("broken serialization"));
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            env.execute();
+        } catch (JobExecutionException e) {
+            Optional<IOException> rootCause = findThrowable(e, IOException.class);
+            assertTrue(rootCause.isPresent());
+            assertTrue(rootCause.get().getMessage().contains("broken serialization"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-	@Test
-	public void testIncorrectSerializer2() {
-		try {
-			env.setParallelism(PARLLELISM);
-			env.getConfig().disableSysoutLogging();
+    @Test
+    public void testIncorrectSerializer3() {
+        try {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(PARLLELISM);
 
-			env
-					.generateSequence(1, 10 * PARLLELISM)
-					.map(new MapFunction<Long, ConsumesTooMuchSpanning>() {
-						@Override
-						public ConsumesTooMuchSpanning map(Long value) throws Exception {
-							return new ConsumesTooMuchSpanning();
-						}
-					})
-					.rebalance()
-					.output(new DiscardingOutputFormat<ConsumesTooMuchSpanning>());
+            env.generateSequence(1, 10 * PARLLELISM)
+                    .map(
+                            new MapFunction<Long, ConsumesTooLittle>() {
+                                @Override
+                                public ConsumesTooLittle map(Long value) throws Exception {
+                                    return new ConsumesTooLittle();
+                                }
+                            })
+                    .rebalance()
+                    .output(new DiscardingOutputFormat<ConsumesTooLittle>());
 
-			env.execute();
-		}
-		catch (JobExecutionException e) {
-			Throwable rootCause = e.getCause();
-			assertTrue(rootCause instanceof IOException);
-			assertTrue(rootCause.getMessage().contains("broken serialization"));
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            env.execute();
+        } catch (JobExecutionException e) {
+            Optional<IOException> rootCause = findThrowable(e, IOException.class);
+            assertTrue(rootCause.isPresent());
+            assertTrue(rootCause.get().getMessage().contains("broken serialization"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-	@Test
-	public void testIncorrectSerializer3() {
-		try {
-			env.setParallelism(PARLLELISM);
-			env.getConfig().disableSysoutLogging();
+    @Test
+    public void testIncorrectSerializer4() {
+        try {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(PARLLELISM);
 
-			env
-					.generateSequence(1, 10 * PARLLELISM)
-					.map(new MapFunction<Long, ConsumesTooLittle>() {
-						@Override
-						public ConsumesTooLittle map(Long value) throws Exception {
-							return new ConsumesTooLittle();
-						}
-					})
-					.rebalance()
-					.output(new DiscardingOutputFormat<ConsumesTooLittle>());
+            env.generateSequence(1, 10 * PARLLELISM)
+                    .map(
+                            new MapFunction<Long, ConsumesTooLittleSpanning>() {
+                                @Override
+                                public ConsumesTooLittleSpanning map(Long value) throws Exception {
+                                    return new ConsumesTooLittleSpanning();
+                                }
+                            })
+                    .rebalance()
+                    .output(new DiscardingOutputFormat<ConsumesTooLittleSpanning>());
 
-			env.execute();
-		}
-		catch (JobExecutionException e) {
-			Throwable rootCause = e.getCause();
-			assertTrue(rootCause instanceof IOException);
-			assertTrue(rootCause.getMessage().contains("broken serialization"));
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            env.execute();
+        } catch (ProgramInvocationException e) {
+            Throwable rootCause = e.getCause().getCause();
+            assertTrue(rootCause instanceof IOException);
+            assertTrue(rootCause.getMessage().contains("broken serialization"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-	@Test
-	public void testIncorrectSerializer4() {
-		try {
-			env.setParallelism(PARLLELISM);
-			env.getConfig().disableSysoutLogging();
+    // ------------------------------------------------------------------------
+    //  Custom Data Types with broken Serialization Logic
+    // ------------------------------------------------------------------------
 
-			env
-					.generateSequence(1, 10 * PARLLELISM)
-					.map(new MapFunction<Long, ConsumesTooLittleSpanning>() {
-						@Override
-						public ConsumesTooLittleSpanning map(Long value) throws Exception {
-							return new ConsumesTooLittleSpanning();
-						}
-					})
-					.rebalance()
-					.output(new DiscardingOutputFormat<ConsumesTooLittleSpanning>());
+    /** {@link Value} reading more data than written. */
+    public static class ConsumesTooMuch implements Value {
 
-			env.execute();
-		}
-		catch (ProgramInvocationException e) {
-			Throwable rootCause = e.getCause().getCause();
-			assertTrue(rootCause instanceof IOException);
-			assertTrue(rootCause.getMessage().contains("broken serialization"));
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+        @Override
+        public void write(DataOutputView out) throws IOException {
+            // write 4 bytes
+            out.writeInt(42);
+        }
 
-	// ------------------------------------------------------------------------
-	//  Custom Data Types with broken Serialization Logic
-	// ------------------------------------------------------------------------
+        @Override
+        public void read(DataInputView in) throws IOException {
+            // read 8 bytes
+            in.readLong();
+        }
+    }
 
-	/**
-	 * {@link Value} reading more data than written.
-	 */
-	public static class ConsumesTooMuch implements Value {
+    /** {@link Value} reading more buffers than written. */
+    public static class ConsumesTooMuchSpanning implements Value {
 
-		@Override
-		public void write(DataOutputView out) throws IOException {
-			// write 4 bytes
-			out.writeInt(42);
-		}
+        @Override
+        public void write(DataOutputView out) throws IOException {
+            byte[] bytes = new byte[22541];
+            out.write(bytes);
+        }
 
-		@Override
-		public void read(DataInputView in) throws IOException {
-			// read 8 bytes
-			in.readLong();
-		}
-	}
+        @Override
+        public void read(DataInputView in) throws IOException {
+            byte[] bytes = new byte[32941];
+            in.readFully(bytes);
+        }
+    }
 
-	/**
-	 * {@link Value} reading more buffers than written.
-	 */
-	public static class ConsumesTooMuchSpanning implements Value {
+    /** {@link Value} reading less data than written. */
+    public static class ConsumesTooLittle implements Value {
 
-		@Override
-		public void write(DataOutputView out) throws IOException {
-			byte[] bytes = new byte[22541];
-			out.write(bytes);
-		}
+        @Override
+        public void write(DataOutputView out) throws IOException {
+            // write 8 bytes
+            out.writeLong(42L);
+        }
 
-		@Override
-		public void read(DataInputView in) throws IOException {
-			byte[] bytes = new byte[32941];
-			in.readFully(bytes);
-		}
-	}
+        @Override
+        public void read(DataInputView in) throws IOException {
+            // read 4 bytes
+            in.readInt();
+        }
+    }
 
-	/**
-	 * {@link Value} reading less data than written.
-	 */
-	public static class ConsumesTooLittle implements Value {
+    /** {@link Value} reading fewer buffers than written. */
+    public static class ConsumesTooLittleSpanning implements Value {
 
-		@Override
-		public void write(DataOutputView out) throws IOException {
-			// write 8 bytes
-			out.writeLong(42L);
-		}
+        @Override
+        public void write(DataOutputView out) throws IOException {
+            byte[] bytes = new byte[32941];
+            out.write(bytes);
+        }
 
-		@Override
-		public void read(DataInputView in) throws IOException {
-			// read 4 bytes
-			in.readInt();
-		}
-	}
-
-	/**
-	 * {@link Value} reading fewer buffers than written.
-	 */
-	public static class ConsumesTooLittleSpanning implements Value {
-
-		@Override
-		public void write(DataOutputView out) throws IOException {
-			byte[] bytes = new byte[32941];
-			out.write(bytes);
-		}
-
-		@Override
-		public void read(DataInputView in) throws IOException {
-			byte[] bytes = new byte[22541];
-			in.readFully(bytes);
-		}
-	}
+        @Override
+        public void read(DataInputView in) throws IOException {
+            byte[] bytes = new byte[22541];
+            in.readFully(bytes);
+        }
+    }
 }

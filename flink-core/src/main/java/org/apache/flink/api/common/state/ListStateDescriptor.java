@@ -29,107 +29,70 @@ import java.util.List;
 /**
  * A {@link StateDescriptor} for {@link ListState}. This can be used to create state where the type
  * is a list that can be appended and iterated over.
- * 
+ *
  * <p>Using {@code ListState} is typically more efficient than manually maintaining a list in a
- * {@link ValueState}, because the backing implementation can support efficient appends, rathern then
+ * {@link ValueState}, because the backing implementation can support efficient appends, rather than
  * replacing the full list on write.
- * 
- * <p>To create keyed list state (on a KeyedStream), use 
- * {@link org.apache.flink.api.common.functions.RuntimeContext#getListState(ListStateDescriptor)}.
+ *
+ * <p>To create keyed list state (on a KeyedStream), use {@link
+ * org.apache.flink.api.common.functions.RuntimeContext#getListState(ListStateDescriptor)}.
  *
  * @param <T> The type of the values that can be added to the list state.
  */
 @PublicEvolving
 public class ListStateDescriptor<T> extends StateDescriptor<ListState<T>, List<T>> {
-	private static final long serialVersionUID = 2L;
+    private static final long serialVersionUID = 2L;
 
-	/**
-	 * Creates a new {@code ListStateDescriptor} with the given name and list element type.
-	 *
-	 * <p>If this constructor fails (because it is not possible to describe the type via a class),
-	 * consider using the {@link #ListStateDescriptor(String, TypeInformation)} constructor.
-	 *
-	 * @param name The (unique) name for the state.
-	 * @param elementTypeClass The type of the elements in the state.
-	 */
-	public ListStateDescriptor(String name, Class<T> elementTypeClass) {
-		super(name, new ListTypeInfo<>(elementTypeClass), null);
-	}
+    /**
+     * Creates a new {@code ListStateDescriptor} with the given name and list element type.
+     *
+     * <p>If this constructor fails (because it is not possible to describe the type via a class),
+     * consider using the {@link #ListStateDescriptor(String, TypeInformation)} constructor.
+     *
+     * @param name The (unique) name for the state.
+     * @param elementTypeClass The type of the elements in the state.
+     */
+    public ListStateDescriptor(String name, Class<T> elementTypeClass) {
+        super(name, new ListTypeInfo<>(elementTypeClass), null);
+    }
 
-	/**
-	 * Creates a new {@code ListStateDescriptor} with the given name and list element type.
-	 *
-	 * @param name The (unique) name for the state.
-	 * @param elementTypeInfo The type of the elements in the state.
-	 */
-	public ListStateDescriptor(String name, TypeInformation<T> elementTypeInfo) {
-		super(name, new ListTypeInfo<>(elementTypeInfo), null);
-	}
+    /**
+     * Creates a new {@code ListStateDescriptor} with the given name and list element type.
+     *
+     * @param name The (unique) name for the state.
+     * @param elementTypeInfo The type of the elements in the state.
+     */
+    public ListStateDescriptor(String name, TypeInformation<T> elementTypeInfo) {
+        super(name, new ListTypeInfo<>(elementTypeInfo), null);
+    }
 
-	/**
-	 * Creates a new {@code ListStateDescriptor} with the given name and list element type.
-	 *
-	 * @param name The (unique) name for the state.
-	 * @param typeSerializer The type serializer for the list values.
-	 */
-	public ListStateDescriptor(String name, TypeSerializer<T> typeSerializer) {
-		super(name, new ListSerializer<>(typeSerializer), null);
-	}
+    /**
+     * Creates a new {@code ListStateDescriptor} with the given name and list element type.
+     *
+     * @param name The (unique) name for the state.
+     * @param typeSerializer The type serializer for the list values.
+     */
+    public ListStateDescriptor(String name, TypeSerializer<T> typeSerializer) {
+        super(name, new ListSerializer<>(typeSerializer), null);
+    }
 
-	// ------------------------------------------------------------------------
+    /**
+     * Gets the serializer for the elements contained in the list.
+     *
+     * @return The serializer for the elements in the list.
+     */
+    public TypeSerializer<T> getElementSerializer() {
+        // call getSerializer() here to get the initialization check and proper error message
+        final TypeSerializer<List<T>> rawSerializer = getSerializer();
+        if (!(rawSerializer instanceof ListSerializer)) {
+            throw new IllegalStateException();
+        }
 
-	@Override
-	public ListState<T> bind(StateBinder stateBinder) throws Exception {
-		return stateBinder.createListState(this);
-	}
+        return ((ListSerializer<T>) rawSerializer).getElementSerializer();
+    }
 
-	/**
-	 * Gets the serializer for the elements contained in the list.
-	 * 
-	 * @return The serializer for the elements in the list.
-	 */
-	public TypeSerializer<T> getElementSerializer() {
-		// call getSerializer() here to get the initialization check and proper error message
-		final TypeSerializer<List<T>> rawSerializer = getSerializer();
-		if (!(rawSerializer instanceof ListSerializer)) {
-			throw new IllegalStateException();
-		}
-
-		return ((ListSerializer<T>) rawSerializer).getElementSerializer();
-	}
-
-	@Override
-	public Type getType() {
-		return Type.LIST;
-	}
-
-	// ------------------------------------------------------------------------
-
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (o == null || getClass() != o.getClass()) {
-			return false;
-		}
-
-		final ListStateDescriptor<?> that = (ListStateDescriptor<?>) o;
-		return serializer.equals(that.serializer) && name.equals(that.name);
-
-	}
-
-	@Override
-	public int hashCode() {
-		int result = serializer.hashCode();
-		result = 31 * result + name.hashCode();
-		return result;
-	}
-
-	@Override
-	public String toString() {
-		return "ListStateDescriptor{" +
-				"serializer=" + serializer +
-				'}';
-	}
+    @Override
+    public Type getType() {
+        return Type.LIST;
+    }
 }

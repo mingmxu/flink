@@ -20,298 +20,300 @@ package org.apache.flink.runtime.state;
 
 import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.common.typeutils.TypeSerializerSerializationUtil;
 import org.apache.flink.api.common.typeutils.base.DoubleSerializer;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.common.typeutils.base.LongSerializer;
+import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.core.memory.ByteArrayInputStreamWithPos;
 import org.apache.flink.core.memory.ByteArrayOutputStreamWithPos;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.runtime.state.metainfo.StateMetaInfoReader;
+import org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshot;
+import org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshotReadersWriters;
 
 import org.junit.Assert;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.powermock.api.mockito.PowerMockito;
-import org.powermock.core.classloader.annotations.PrepareForTest;
-import org.powermock.modules.junit4.PowerMockRunner;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
+import static org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshotReadersWriters.CURRENT_STATE_META_INFO_SNAPSHOT_VERSION;
 
-@RunWith(PowerMockRunner.class)
-@PrepareForTest(TypeSerializerSerializationUtil.class)
 public class SerializationProxiesTest {
 
-	@Test
-	public void testKeyedBackendSerializationProxyRoundtrip() throws Exception {
+    @Test
+    public void testKeyedBackendSerializationProxyRoundtrip() throws Exception {
 
-		TypeSerializer<?> keySerializer = IntSerializer.INSTANCE;
-		TypeSerializer<?> namespaceSerializer = LongSerializer.INSTANCE;
-		TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
+        TypeSerializer<?> keySerializer = IntSerializer.INSTANCE;
+        TypeSerializer<?> namespaceSerializer = LongSerializer.INSTANCE;
+        TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
 
-		List<RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?>> stateMetaInfoList = new ArrayList<>();
+        List<StateMetaInfoSnapshot> stateMetaInfoList = new ArrayList<>();
 
-		stateMetaInfoList.add(new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, "a", namespaceSerializer, stateSerializer).snapshot());
-		stateMetaInfoList.add(new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, "b", namespaceSerializer, stateSerializer).snapshot());
-		stateMetaInfoList.add(new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, "c", namespaceSerializer, stateSerializer).snapshot());
+        stateMetaInfoList.add(
+                new RegisteredKeyValueStateBackendMetaInfo<>(
+                                StateDescriptor.Type.VALUE,
+                                "a",
+                                namespaceSerializer,
+                                stateSerializer)
+                        .snapshot());
+        stateMetaInfoList.add(
+                new RegisteredKeyValueStateBackendMetaInfo<>(
+                                StateDescriptor.Type.VALUE,
+                                "b",
+                                namespaceSerializer,
+                                stateSerializer)
+                        .snapshot());
+        stateMetaInfoList.add(
+                new RegisteredKeyValueStateBackendMetaInfo<>(
+                                StateDescriptor.Type.VALUE,
+                                "c",
+                                namespaceSerializer,
+                                stateSerializer)
+                        .snapshot());
 
-		KeyedBackendSerializationProxy<?> serializationProxy =
-				new KeyedBackendSerializationProxy<>(keySerializer, stateMetaInfoList, true);
+        KeyedBackendSerializationProxy<?> serializationProxy =
+                new KeyedBackendSerializationProxy<>(keySerializer, stateMetaInfoList, true);
 
-		byte[] serialized;
-		try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
-			serializationProxy.write(new DataOutputViewStreamWrapper(out));
-			serialized = out.toByteArray();
-		}
+        byte[] serialized;
+        try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
+            serializationProxy.write(new DataOutputViewStreamWrapper(out));
+            serialized = out.toByteArray();
+        }
 
-		serializationProxy =
-				new KeyedBackendSerializationProxy<>(Thread.currentThread().getContextClassLoader());
+        serializationProxy =
+                new KeyedBackendSerializationProxy<>(
+                        Thread.currentThread().getContextClassLoader());
 
-		try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
-			serializationProxy.read(new DataInputViewStreamWrapper(in));
-		}
+        try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
+            serializationProxy.read(new DataInputViewStreamWrapper(in));
+        }
 
-		Assert.assertEquals(true, serializationProxy.isUsingKeyGroupCompression());
-		Assert.assertEquals(keySerializer, serializationProxy.getKeySerializer());
-		Assert.assertEquals(keySerializer.snapshotConfiguration(), serializationProxy.getKeySerializerConfigSnapshot());
-		Assert.assertEquals(stateMetaInfoList, serializationProxy.getStateMetaInfoSnapshots());
-	}
+        Assert.assertTrue(serializationProxy.isUsingKeyGroupCompression());
+        Assert.assertTrue(
+                serializationProxy.getKeySerializerSnapshot()
+                        instanceof IntSerializer.IntSerializerSnapshot);
 
-	@Test
-	public void testKeyedBackendSerializationProxyRoundtripWithSerializerSerializationFailures() throws Exception {
+        assertEqualStateMetaInfoSnapshotsLists(
+                stateMetaInfoList, serializationProxy.getStateMetaInfoSnapshots());
+    }
 
-		TypeSerializer<?> keySerializer = IntSerializer.INSTANCE;
-		TypeSerializer<?> namespaceSerializer = LongSerializer.INSTANCE;
-		TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
+    @Test
+    public void testKeyedStateMetaInfoSerialization() throws Exception {
 
-		List<RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?>> stateMetaInfoList = new ArrayList<>();
+        String name = "test";
+        TypeSerializer<?> namespaceSerializer = LongSerializer.INSTANCE;
+        TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
 
-		stateMetaInfoList.add(new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, "a", namespaceSerializer, stateSerializer).snapshot());
-		stateMetaInfoList.add(new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, "b", namespaceSerializer, stateSerializer).snapshot());
-		stateMetaInfoList.add(new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, "c", namespaceSerializer, stateSerializer).snapshot());
+        StateMetaInfoSnapshot metaInfo =
+                new RegisteredKeyValueStateBackendMetaInfo<>(
+                                StateDescriptor.Type.VALUE,
+                                name,
+                                namespaceSerializer,
+                                stateSerializer)
+                        .snapshot();
 
-		KeyedBackendSerializationProxy<?> serializationProxy =
-			new KeyedBackendSerializationProxy<>(keySerializer, stateMetaInfoList, true);
+        byte[] serialized;
+        try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
+            StateMetaInfoSnapshotReadersWriters.getWriter()
+                    .writeStateMetaInfoSnapshot(metaInfo, new DataOutputViewStreamWrapper(out));
+            serialized = out.toByteArray();
+        }
 
-		byte[] serialized;
-		try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
-			serializationProxy.write(new DataOutputViewStreamWrapper(out));
-			serialized = out.toByteArray();
-		}
+        try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
+            final StateMetaInfoReader reader =
+                    StateMetaInfoSnapshotReadersWriters.getReader(
+                            CURRENT_STATE_META_INFO_SNAPSHOT_VERSION,
+                            StateMetaInfoSnapshotReadersWriters.StateTypeHint.KEYED_STATE);
+            metaInfo =
+                    reader.readStateMetaInfoSnapshot(
+                            new DataInputViewStreamWrapper(in),
+                            Thread.currentThread().getContextClassLoader());
+        }
 
-		serializationProxy =
-			new KeyedBackendSerializationProxy<>(Thread.currentThread().getContextClassLoader());
+        Assert.assertEquals(name, metaInfo.getName());
+    }
 
-		// mock failure when deserializing serializers
-		TypeSerializerSerializationUtil.TypeSerializerSerializationProxy<?> mockProxy =
-				mock(TypeSerializerSerializationUtil.TypeSerializerSerializationProxy.class);
-		doThrow(new IOException()).when(mockProxy).read(any(DataInputViewStreamWrapper.class));
-		PowerMockito.whenNew(TypeSerializerSerializationUtil.TypeSerializerSerializationProxy.class).withAnyArguments().thenReturn(mockProxy);
+    @Test
+    public void testOperatorBackendSerializationProxyRoundtrip() throws Exception {
 
-		try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
-			serializationProxy.read(new DataInputViewStreamWrapper(in));
-		}
+        TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
+        TypeSerializer<?> keySerializer = DoubleSerializer.INSTANCE;
+        TypeSerializer<?> valueSerializer = StringSerializer.INSTANCE;
 
-		Assert.assertEquals(true, serializationProxy.isUsingKeyGroupCompression());
-		Assert.assertEquals(null, serializationProxy.getKeySerializer());
-		Assert.assertEquals(keySerializer.snapshotConfiguration(), serializationProxy.getKeySerializerConfigSnapshot());
+        List<StateMetaInfoSnapshot> stateMetaInfoSnapshots = new ArrayList<>();
 
-		for (RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?> meta : serializationProxy.getStateMetaInfoSnapshots()) {
-			Assert.assertEquals(null, meta.getNamespaceSerializer());
-			Assert.assertEquals(null, meta.getStateSerializer());
-			Assert.assertEquals(namespaceSerializer.snapshotConfiguration(), meta.getNamespaceSerializerConfigSnapshot());
-			Assert.assertEquals(stateSerializer.snapshotConfiguration(), meta.getStateSerializerConfigSnapshot());
-		}
-	}
+        stateMetaInfoSnapshots.add(
+                new RegisteredOperatorStateBackendMetaInfo<>(
+                                "a", stateSerializer, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE)
+                        .snapshot());
+        stateMetaInfoSnapshots.add(
+                new RegisteredOperatorStateBackendMetaInfo<>(
+                                "b", stateSerializer, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE)
+                        .snapshot());
+        stateMetaInfoSnapshots.add(
+                new RegisteredOperatorStateBackendMetaInfo<>(
+                                "c", stateSerializer, OperatorStateHandle.Mode.UNION)
+                        .snapshot());
 
-	@Test
-	public void testKeyedStateMetaInfoSerialization() throws Exception {
+        List<StateMetaInfoSnapshot> broadcastStateMetaInfoSnapshots = new ArrayList<>();
 
-		String name = "test";
-		TypeSerializer<?> namespaceSerializer = LongSerializer.INSTANCE;
-		TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
+        broadcastStateMetaInfoSnapshots.add(
+                new RegisteredBroadcastStateBackendMetaInfo<>(
+                                "d",
+                                OperatorStateHandle.Mode.BROADCAST,
+                                keySerializer,
+                                valueSerializer)
+                        .snapshot());
+        broadcastStateMetaInfoSnapshots.add(
+                new RegisteredBroadcastStateBackendMetaInfo<>(
+                                "e",
+                                OperatorStateHandle.Mode.BROADCAST,
+                                valueSerializer,
+                                keySerializer)
+                        .snapshot());
 
-		RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?> metaInfo = new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, name, namespaceSerializer, stateSerializer).snapshot();
+        OperatorBackendSerializationProxy serializationProxy =
+                new OperatorBackendSerializationProxy(
+                        stateMetaInfoSnapshots, broadcastStateMetaInfoSnapshots);
 
-		byte[] serialized;
-		try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
-			KeyedBackendStateMetaInfoSnapshotReaderWriters
-				.getWriterForVersion(KeyedBackendSerializationProxy.VERSION, metaInfo)
-				.writeStateMetaInfo(new DataOutputViewStreamWrapper(out));
+        byte[] serialized;
+        try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
+            serializationProxy.write(new DataOutputViewStreamWrapper(out));
+            serialized = out.toByteArray();
+        }
 
-			serialized = out.toByteArray();
-		}
+        serializationProxy =
+                new OperatorBackendSerializationProxy(
+                        Thread.currentThread().getContextClassLoader());
 
-		try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
-			metaInfo = KeyedBackendStateMetaInfoSnapshotReaderWriters
-				.getReaderForVersion(KeyedBackendSerializationProxy.VERSION, Thread.currentThread().getContextClassLoader())
-				.readStateMetaInfo(new DataInputViewStreamWrapper(in));
-		}
+        try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
+            serializationProxy.read(new DataInputViewStreamWrapper(in));
+        }
 
-		Assert.assertEquals(name, metaInfo.getName());
-	}
+        assertEqualStateMetaInfoSnapshotsLists(
+                stateMetaInfoSnapshots, serializationProxy.getOperatorStateMetaInfoSnapshots());
+        assertEqualStateMetaInfoSnapshotsLists(
+                broadcastStateMetaInfoSnapshots,
+                serializationProxy.getBroadcastStateMetaInfoSnapshots());
+    }
 
-	@Test
-	public void testKeyedStateMetaInfoReadSerializerFailureResilience() throws Exception {
-		String name = "test";
-		TypeSerializer<?> namespaceSerializer = LongSerializer.INSTANCE;
-		TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
+    @Test
+    public void testOperatorStateMetaInfoSerialization() throws Exception {
 
-		RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?> metaInfo = new RegisteredKeyedBackendStateMetaInfo<>(
-			StateDescriptor.Type.VALUE, name, namespaceSerializer, stateSerializer).snapshot();
+        String name = "test";
+        TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
 
-		byte[] serialized;
-		try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
-			KeyedBackendStateMetaInfoSnapshotReaderWriters
-				.getWriterForVersion(KeyedBackendSerializationProxy.VERSION, metaInfo)
-				.writeStateMetaInfo(new DataOutputViewStreamWrapper(out));
+        StateMetaInfoSnapshot snapshot =
+                new RegisteredOperatorStateBackendMetaInfo<>(
+                                name, stateSerializer, OperatorStateHandle.Mode.UNION)
+                        .snapshot();
 
-			serialized = out.toByteArray();
-		}
+        byte[] serialized;
+        try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
+            StateMetaInfoSnapshotReadersWriters.getWriter()
+                    .writeStateMetaInfoSnapshot(snapshot, new DataOutputViewStreamWrapper(out));
 
-		// mock failure when deserializing serializer
-		TypeSerializerSerializationUtil.TypeSerializerSerializationProxy<?> mockProxy =
-				mock(TypeSerializerSerializationUtil.TypeSerializerSerializationProxy.class);
-		doThrow(new IOException()).when(mockProxy).read(any(DataInputViewStreamWrapper.class));
-		PowerMockito.whenNew(TypeSerializerSerializationUtil.TypeSerializerSerializationProxy.class).withAnyArguments().thenReturn(mockProxy);
+            serialized = out.toByteArray();
+        }
 
-		try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
-			metaInfo = KeyedBackendStateMetaInfoSnapshotReaderWriters
-				.getReaderForVersion(KeyedBackendSerializationProxy.VERSION, Thread.currentThread().getContextClassLoader())
-				.readStateMetaInfo(new DataInputViewStreamWrapper(in));
-		}
+        try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
+            final StateMetaInfoReader reader =
+                    StateMetaInfoSnapshotReadersWriters.getReader(
+                            CURRENT_STATE_META_INFO_SNAPSHOT_VERSION,
+                            StateMetaInfoSnapshotReadersWriters.StateTypeHint.OPERATOR_STATE);
+            snapshot =
+                    reader.readStateMetaInfoSnapshot(
+                            new DataInputViewStreamWrapper(in),
+                            Thread.currentThread().getContextClassLoader());
+        }
 
-		Assert.assertEquals(name, metaInfo.getName());
-		Assert.assertEquals(null, metaInfo.getNamespaceSerializer());
-		Assert.assertEquals(null, metaInfo.getStateSerializer());
-		Assert.assertEquals(namespaceSerializer.snapshotConfiguration(), metaInfo.getNamespaceSerializerConfigSnapshot());
-		Assert.assertEquals(stateSerializer.snapshotConfiguration(), metaInfo.getStateSerializerConfigSnapshot());
-	}
+        RegisteredOperatorStateBackendMetaInfo<?> restoredMetaInfo =
+                new RegisteredOperatorStateBackendMetaInfo<>(snapshot);
 
-	@Test
-	public void testOperatorBackendSerializationProxyRoundtrip() throws Exception {
+        Assert.assertEquals(name, restoredMetaInfo.getName());
+        Assert.assertEquals(OperatorStateHandle.Mode.UNION, restoredMetaInfo.getAssignmentMode());
+        Assert.assertEquals(stateSerializer, restoredMetaInfo.getPartitionStateSerializer());
+    }
 
-		TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
+    @Test
+    public void testBroadcastStateMetaInfoSerialization() throws Exception {
 
-		List<RegisteredOperatorBackendStateMetaInfo.Snapshot<?>> stateMetaInfoSnapshots = new ArrayList<>();
+        String name = "test";
+        TypeSerializer<?> keySerializer = DoubleSerializer.INSTANCE;
+        TypeSerializer<?> valueSerializer = StringSerializer.INSTANCE;
 
-		stateMetaInfoSnapshots.add(new RegisteredOperatorBackendStateMetaInfo<>(
-			"a", stateSerializer, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE).snapshot());
-		stateMetaInfoSnapshots.add(new RegisteredOperatorBackendStateMetaInfo<>(
-			"b", stateSerializer, OperatorStateHandle.Mode.SPLIT_DISTRIBUTE).snapshot());
-		stateMetaInfoSnapshots.add(new RegisteredOperatorBackendStateMetaInfo<>(
-			"c", stateSerializer, OperatorStateHandle.Mode.BROADCAST).snapshot());
+        StateMetaInfoSnapshot snapshot =
+                new RegisteredBroadcastStateBackendMetaInfo<>(
+                                name,
+                                OperatorStateHandle.Mode.BROADCAST,
+                                keySerializer,
+                                valueSerializer)
+                        .snapshot();
 
-		OperatorBackendSerializationProxy serializationProxy =
-				new OperatorBackendSerializationProxy(stateMetaInfoSnapshots);
+        byte[] serialized;
+        try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
+            StateMetaInfoSnapshotReadersWriters.getWriter()
+                    .writeStateMetaInfoSnapshot(snapshot, new DataOutputViewStreamWrapper(out));
 
-		byte[] serialized;
-		try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
-			serializationProxy.write(new DataOutputViewStreamWrapper(out));
-			serialized = out.toByteArray();
-		}
+            serialized = out.toByteArray();
+        }
 
-		serializationProxy =
-				new OperatorBackendSerializationProxy(Thread.currentThread().getContextClassLoader());
+        try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
+            final StateMetaInfoReader reader =
+                    StateMetaInfoSnapshotReadersWriters.getReader(
+                            CURRENT_STATE_META_INFO_SNAPSHOT_VERSION,
+                            StateMetaInfoSnapshotReadersWriters.StateTypeHint.OPERATOR_STATE);
+            snapshot =
+                    reader.readStateMetaInfoSnapshot(
+                            new DataInputViewStreamWrapper(in),
+                            Thread.currentThread().getContextClassLoader());
+        }
 
-		try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
-			serializationProxy.read(new DataInputViewStreamWrapper(in));
-		}
+        RegisteredBroadcastStateBackendMetaInfo<?, ?> restoredMetaInfo =
+                new RegisteredBroadcastStateBackendMetaInfo<>(snapshot);
 
-		Assert.assertEquals(stateMetaInfoSnapshots, serializationProxy.getStateMetaInfoSnapshots());
-	}
+        Assert.assertEquals(name, restoredMetaInfo.getName());
+        Assert.assertEquals(
+                OperatorStateHandle.Mode.BROADCAST, restoredMetaInfo.getAssignmentMode());
+        Assert.assertEquals(keySerializer, restoredMetaInfo.getKeySerializer());
+        Assert.assertEquals(valueSerializer, restoredMetaInfo.getValueSerializer());
+    }
 
-	@Test
-	public void testOperatorStateMetaInfoSerialization() throws Exception {
+    /**
+     * This test fixes the order of elements in the enum which is important for serialization. Do
+     * not modify this test except if you are entirely sure what you are doing.
+     */
+    @Test
+    public void testFixTypeOrder() {
+        // ensure all elements are covered
+        Assert.assertEquals(7, StateDescriptor.Type.values().length);
+        // fix the order of elements to keep serialization format stable
+        Assert.assertEquals(0, StateDescriptor.Type.UNKNOWN.ordinal());
+        Assert.assertEquals(1, StateDescriptor.Type.VALUE.ordinal());
+        Assert.assertEquals(2, StateDescriptor.Type.LIST.ordinal());
+        Assert.assertEquals(3, StateDescriptor.Type.REDUCING.ordinal());
+        Assert.assertEquals(4, StateDescriptor.Type.FOLDING.ordinal());
+        Assert.assertEquals(5, StateDescriptor.Type.AGGREGATING.ordinal());
+        Assert.assertEquals(6, StateDescriptor.Type.MAP.ordinal());
+    }
 
-		String name = "test";
-		TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
+    private void assertEqualStateMetaInfoSnapshotsLists(
+            List<StateMetaInfoSnapshot> expected, List<StateMetaInfoSnapshot> actual) {
+        Assert.assertEquals(expected.size(), actual.size());
+        for (int i = 0; i < expected.size(); ++i) {
+            assertEqualStateMetaInfoSnapshots(expected.get(i), actual.get(i));
+        }
+    }
 
-		RegisteredOperatorBackendStateMetaInfo.Snapshot<?> metaInfo =
-			new RegisteredOperatorBackendStateMetaInfo<>(
-				name, stateSerializer, OperatorStateHandle.Mode.BROADCAST).snapshot();
-
-		byte[] serialized;
-		try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
-			OperatorBackendStateMetaInfoSnapshotReaderWriters
-				.getWriterForVersion(OperatorBackendSerializationProxy.VERSION, metaInfo)
-				.writeStateMetaInfo(new DataOutputViewStreamWrapper(out));
-
-			serialized = out.toByteArray();
-		}
-
-		try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
-			metaInfo = OperatorBackendStateMetaInfoSnapshotReaderWriters
-				.getReaderForVersion(OperatorBackendSerializationProxy.VERSION, Thread.currentThread().getContextClassLoader())
-				.readStateMetaInfo(new DataInputViewStreamWrapper(in));
-		}
-
-		Assert.assertEquals(name, metaInfo.getName());
-	}
-
-	@Test
-	public void testOperatorStateMetaInfoReadSerializerFailureResilience() throws Exception {
-		String name = "test";
-		TypeSerializer<?> stateSerializer = DoubleSerializer.INSTANCE;
-
-		RegisteredOperatorBackendStateMetaInfo.Snapshot<?> metaInfo =
-			new RegisteredOperatorBackendStateMetaInfo<>(
-				name, stateSerializer, OperatorStateHandle.Mode.BROADCAST).snapshot();
-
-		byte[] serialized;
-		try (ByteArrayOutputStreamWithPos out = new ByteArrayOutputStreamWithPos()) {
-			OperatorBackendStateMetaInfoSnapshotReaderWriters
-				.getWriterForVersion(OperatorBackendSerializationProxy.VERSION, metaInfo)
-				.writeStateMetaInfo(new DataOutputViewStreamWrapper(out));
-
-			serialized = out.toByteArray();
-		}
-
-		// mock failure when deserializing serializer
-		TypeSerializerSerializationUtil.TypeSerializerSerializationProxy<?> mockProxy =
-				mock(TypeSerializerSerializationUtil.TypeSerializerSerializationProxy.class);
-		doThrow(new IOException()).when(mockProxy).read(any(DataInputViewStreamWrapper.class));
-		PowerMockito.whenNew(TypeSerializerSerializationUtil.TypeSerializerSerializationProxy.class).withAnyArguments().thenReturn(mockProxy);
-
-		try (ByteArrayInputStreamWithPos in = new ByteArrayInputStreamWithPos(serialized)) {
-			metaInfo = OperatorBackendStateMetaInfoSnapshotReaderWriters
-				.getReaderForVersion(OperatorBackendSerializationProxy.VERSION, Thread.currentThread().getContextClassLoader())
-				.readStateMetaInfo(new DataInputViewStreamWrapper(in));
-		}
-
-		Assert.assertEquals(name, metaInfo.getName());
-		Assert.assertEquals(null, metaInfo.getPartitionStateSerializer());
-		Assert.assertEquals(stateSerializer.snapshotConfiguration(), metaInfo.getPartitionStateSerializerConfigSnapshot());
-	}
-
-	/**
-	 * This test fixes the order of elements in the enum which is important for serialization. Do not modify this test
-	 * except if you are entirely sure what you are doing.
-	 */
-	@Test
-	public void testFixTypeOrder() {
-		// ensure all elements are covered
-		Assert.assertEquals(7, StateDescriptor.Type.values().length);
-		// fix the order of elements to keep serialization format stable
-		Assert.assertEquals(0, StateDescriptor.Type.UNKNOWN.ordinal());
-		Assert.assertEquals(1, StateDescriptor.Type.VALUE.ordinal());
-		Assert.assertEquals(2, StateDescriptor.Type.LIST.ordinal());
-		Assert.assertEquals(3, StateDescriptor.Type.REDUCING.ordinal());
-		Assert.assertEquals(4, StateDescriptor.Type.FOLDING.ordinal());
-		Assert.assertEquals(5, StateDescriptor.Type.AGGREGATING.ordinal());
-		Assert.assertEquals(6, StateDescriptor.Type.MAP.ordinal());
-	}
+    private void assertEqualStateMetaInfoSnapshots(
+            StateMetaInfoSnapshot expected, StateMetaInfoSnapshot actual) {
+        Assert.assertEquals(expected.getName(), actual.getName());
+        Assert.assertEquals(expected.getBackendStateType(), actual.getBackendStateType());
+        Assert.assertEquals(expected.getOptionsImmutable(), actual.getOptionsImmutable());
+        Assert.assertEquals(
+                expected.getSerializerSnapshotsImmutable(),
+                actual.getSerializerSnapshotsImmutable());
+    }
 }

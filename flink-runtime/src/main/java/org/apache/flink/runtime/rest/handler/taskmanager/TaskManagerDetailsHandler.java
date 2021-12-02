@@ -21,20 +21,25 @@ package org.apache.flink.runtime.rest.handler.taskmanager;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
+import org.apache.flink.runtime.resourcemanager.TaskManagerInfoWithSlots;
+import org.apache.flink.runtime.resourcemanager.exceptions.UnknownTaskExecutorException;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.RestHandlerException;
 import org.apache.flink.runtime.rest.handler.legacy.metrics.MetricFetcher;
 import org.apache.flink.runtime.rest.handler.legacy.metrics.MetricStore;
+import org.apache.flink.runtime.rest.handler.resourcemanager.AbstractResourceManagerHandler;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.MessageHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerDetailsInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerIdPathParameter;
-import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerMessageParameters;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerMetricsInfo;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
+
+import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
 import javax.annotation.Nonnull;
 
@@ -42,122 +47,183 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
-/**
- * Handler which serves detailed TaskManager information.
- */
-public class TaskManagerDetailsHandler extends AbstractTaskManagerHandler<RestfulGateway, EmptyRequestBody, TaskManagerDetailsInfo, TaskManagerMessageParameters> {
+/** Handler which serves detailed TaskManager information. */
+public class TaskManagerDetailsHandler
+        extends AbstractResourceManagerHandler<
+                RestfulGateway,
+                EmptyRequestBody,
+                TaskManagerDetailsInfo,
+                TaskManagerMessageParameters> {
 
-	private final MetricFetcher metricFetcher;
-	private final MetricStore metricStore;
+    private final MetricFetcher metricFetcher;
+    private final MetricStore metricStore;
 
-	public TaskManagerDetailsHandler(
-			CompletableFuture<String> localRestAddress,
-			GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-			Time timeout,
-			Map<String, String> responseHeaders,
-			MessageHeaders<EmptyRequestBody, TaskManagerDetailsInfo, TaskManagerMessageParameters> messageHeaders,
-			GatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever,
-			MetricFetcher metricFetcher) {
-		super(localRestAddress, leaderRetriever, timeout, responseHeaders, messageHeaders, resourceManagerGatewayRetriever);
+    public TaskManagerDetailsHandler(
+            GatewayRetriever<? extends RestfulGateway> leaderRetriever,
+            Time timeout,
+            Map<String, String> responseHeaders,
+            MessageHeaders<EmptyRequestBody, TaskManagerDetailsInfo, TaskManagerMessageParameters>
+                    messageHeaders,
+            GatewayRetriever<ResourceManagerGateway> resourceManagerGatewayRetriever,
+            MetricFetcher metricFetcher) {
+        super(
+                leaderRetriever,
+                timeout,
+                responseHeaders,
+                messageHeaders,
+                resourceManagerGatewayRetriever);
 
-		this.metricFetcher = Preconditions.checkNotNull(metricFetcher);
-		this.metricStore = metricFetcher.getMetricStore();
-	}
+        this.metricFetcher = Preconditions.checkNotNull(metricFetcher);
+        this.metricStore = metricFetcher.getMetricStore();
+    }
 
-	@Override
-	protected CompletableFuture<TaskManagerDetailsInfo> handleRequest(
-			@Nonnull HandlerRequest<EmptyRequestBody, TaskManagerMessageParameters> request,
-			@Nonnull ResourceManagerGateway gateway) throws RestHandlerException {
-		final ResourceID taskManagerResourceId = request.getPathParameter(TaskManagerIdPathParameter
-			.class);
+    @Override
+    protected CompletableFuture<TaskManagerDetailsInfo> handleRequest(
+            @Nonnull HandlerRequest<EmptyRequestBody> request,
+            @Nonnull ResourceManagerGateway gateway)
+            throws RestHandlerException {
+        final ResourceID taskManagerResourceId =
+                request.getPathParameter(TaskManagerIdPathParameter.class);
 
-		CompletableFuture<TaskManagerInfo> taskManagerInfoFuture = gateway.requestTaskManagerInfo(taskManagerResourceId, timeout);
+        CompletableFuture<TaskManagerInfoWithSlots> taskManagerInfoWithSlotsFuture =
+                gateway.requestTaskManagerDetailsInfo(taskManagerResourceId, timeout);
 
-		metricFetcher.update();
+        metricFetcher.update();
 
-		return taskManagerInfoFuture.thenApply(
-			(TaskManagerInfo taskManagerInfo) -> {
-				final MetricStore.TaskManagerMetricStore tmMetrics =
-					metricStore.getTaskManagerMetricStore(taskManagerResourceId.getResourceIdString());
+        return taskManagerInfoWithSlotsFuture
+                .thenApply(
+                        (taskManagerInfoWithSlots) -> {
+                            final MetricStore.TaskManagerMetricStore tmMetrics =
+                                    metricStore.getTaskManagerMetricStore(
+                                            taskManagerResourceId.getResourceIdString());
 
-				final TaskManagerMetricsInfo taskManagerMetricsInfo;
+                            final TaskManagerMetricsInfo taskManagerMetricsInfo;
 
-				if (tmMetrics != null) {
-					log.debug("Create metrics info for TaskManager {}.", taskManagerResourceId);
-					taskManagerMetricsInfo = createTaskManagerMetricsInfo(tmMetrics);
-				} else {
-					log.debug("No metrics for TaskManager {}.", taskManagerResourceId);
-					taskManagerMetricsInfo = TaskManagerMetricsInfo.empty();
-				}
+                            if (tmMetrics != null) {
+                                log.debug(
+                                        "Create metrics info for TaskManager {}.",
+                                        taskManagerResourceId.getStringWithMetadata());
+                                taskManagerMetricsInfo = createTaskManagerMetricsInfo(tmMetrics);
+                            } else {
+                                log.debug(
+                                        "No metrics for TaskManager {}.",
+                                        taskManagerResourceId.getStringWithMetadata());
+                                taskManagerMetricsInfo = TaskManagerMetricsInfo.empty();
+                            }
 
-				return new TaskManagerDetailsInfo(
-					taskManagerInfo,
-					taskManagerMetricsInfo);
-			});
-	}
+                            return new TaskManagerDetailsInfo(
+                                    taskManagerInfoWithSlots, taskManagerMetricsInfo);
+                        })
+                .exceptionally(
+                        (Throwable throwable) -> {
+                            final Throwable strippedThrowable =
+                                    ExceptionUtils.stripExecutionException(throwable);
 
-	private static TaskManagerMetricsInfo createTaskManagerMetricsInfo(MetricStore.TaskManagerMetricStore tmMetrics) {
+                            if (strippedThrowable instanceof UnknownTaskExecutorException) {
+                                throw new CompletionException(
+                                        new RestHandlerException(
+                                                "Could not find TaskExecutor "
+                                                        + taskManagerResourceId
+                                                        + '.',
+                                                HttpResponseStatus.NOT_FOUND,
+                                                strippedThrowable));
+                            } else {
+                                throw new CompletionException(strippedThrowable);
+                            }
+                        });
+    }
 
-		Preconditions.checkNotNull(tmMetrics);
+    private static TaskManagerMetricsInfo createTaskManagerMetricsInfo(
+            MetricStore.TaskManagerMetricStore tmMetrics) {
 
-		long heapUsed = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Heap.Used", "0"));
-		long heapCommitted = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Heap.Committed", "0"));
-		long heapTotal = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Heap.Max", "0"));
+        Preconditions.checkNotNull(tmMetrics);
 
-		long nonHeapUsed = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.NonHeap.Used", "0"));
-		long nonHeapCommitted = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.NonHeap.Committed", "0"));
-		long nonHeapTotal = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.NonHeap.Max", "0"));
+        long heapUsed = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Heap.Used", "0"));
+        long heapCommitted =
+                Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Heap.Committed", "0"));
+        long heapTotal = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Heap.Max", "0"));
 
-		long directCount = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Direct.Count", "0"));
-		long directUsed = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Direct.MemoryUsed", "0"));
-		long directMax = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Direct.TotalCapacity", "0"));
+        long nonHeapUsed = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.NonHeap.Used", "0"));
+        long nonHeapCommitted =
+                Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.NonHeap.Committed", "0"));
+        long nonHeapTotal = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.NonHeap.Max", "0"));
 
-		long mappedCount = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Mapped.Count", "0"));
-		long mappedUsed = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Mapped.MemoryUsed", "0"));
-		long mappedMax = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Mapped.TotalCapacity", "0"));
+        long directCount = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Direct.Count", "0"));
+        long directUsed =
+                Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Direct.MemoryUsed", "0"));
+        long directMax =
+                Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Direct.TotalCapacity", "0"));
 
-		long memorySegmentsAvailable = Long.valueOf(tmMetrics.getMetric("Status.Network.AvailableMemorySegments", "0"));
-		long memorySegmentsTotal = Long.valueOf(tmMetrics.getMetric("Status.Network.TotalMemorySegments", "0"));
+        long mappedCount = Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Mapped.Count", "0"));
+        long mappedUsed =
+                Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Mapped.MemoryUsed", "0"));
+        long mappedMax =
+                Long.valueOf(tmMetrics.getMetric("Status.JVM.Memory.Mapped.TotalCapacity", "0"));
 
-		final List<TaskManagerMetricsInfo.GarbageCollectorInfo> garbageCollectorInfo = createGarbageCollectorInfo(tmMetrics);
+        long networkMemorySegmentsAvailable =
+                Long.valueOf(
+                        tmMetrics.getMetric("Status.Shuffle.Netty.AvailableMemorySegments", "0"));
+        long networkMemorySegmentsUsed =
+                Long.valueOf(tmMetrics.getMetric("Status.Shuffle.Netty.UsedMemorySegments", "0"));
+        long networkMemorySegmentsTotal =
+                Long.valueOf(tmMetrics.getMetric("Status.Shuffle.Netty.TotalMemorySegments", "0"));
 
-		return new TaskManagerMetricsInfo(
-			heapUsed,
-			heapCommitted,
-			heapTotal,
-			nonHeapUsed,
-			nonHeapCommitted,
-			nonHeapTotal,
-			directCount,
-			directUsed,
-			directMax,
-			mappedCount,
-			mappedUsed,
-			mappedMax,
-			memorySegmentsAvailable,
-			memorySegmentsTotal,
-			garbageCollectorInfo);
-	}
+        long networkMemoryAvailable =
+                Long.valueOf(tmMetrics.getMetric("Status.Shuffle.Netty.AvailableMemory", "0"));
+        long networkMemoryUsed =
+                Long.valueOf(tmMetrics.getMetric("Status.Shuffle.Netty.UsedMemory", "0"));
+        long networkMemoryTotal =
+                Long.valueOf(tmMetrics.getMetric("Status.Shuffle.Netty.TotalMemory", "0"));
 
-	private static List<TaskManagerMetricsInfo.GarbageCollectorInfo> createGarbageCollectorInfo(MetricStore.TaskManagerMetricStore taskManagerMetricStore) {
-		Preconditions.checkNotNull(taskManagerMetricStore);
+        final List<TaskManagerMetricsInfo.GarbageCollectorInfo> garbageCollectorInfo =
+                createGarbageCollectorInfo(tmMetrics);
 
-		ArrayList<TaskManagerMetricsInfo.GarbageCollectorInfo> garbageCollectorInfos = new ArrayList<>(taskManagerMetricStore.garbageCollectorNames.size());
+        return new TaskManagerMetricsInfo(
+                heapUsed,
+                heapCommitted,
+                heapTotal,
+                nonHeapUsed,
+                nonHeapCommitted,
+                nonHeapTotal,
+                directCount,
+                directUsed,
+                directMax,
+                mappedCount,
+                mappedUsed,
+                mappedMax,
+                networkMemorySegmentsAvailable,
+                networkMemorySegmentsUsed,
+                networkMemorySegmentsTotal,
+                networkMemoryAvailable,
+                networkMemoryUsed,
+                networkMemoryTotal,
+                garbageCollectorInfo);
+    }
 
-		for (String garbageCollectorName: taskManagerMetricStore.garbageCollectorNames) {
-			final String count = taskManagerMetricStore.getMetric("Status.JVM.GarbageCollector." + garbageCollectorName + ".Count", null);
-			final String time = taskManagerMetricStore.getMetric("Status.JVM.GarbageCollector." + garbageCollectorName + ".Time", null);
+    private static List<TaskManagerMetricsInfo.GarbageCollectorInfo> createGarbageCollectorInfo(
+            MetricStore.TaskManagerMetricStore taskManagerMetricStore) {
+        Preconditions.checkNotNull(taskManagerMetricStore);
 
-			if (count != null && time != null) {
-				garbageCollectorInfos.add(
-					new TaskManagerMetricsInfo.GarbageCollectorInfo(
-						garbageCollectorName,
-						Long.valueOf(count),
-						Long.valueOf(time)));
-			}
-		}
+        ArrayList<TaskManagerMetricsInfo.GarbageCollectorInfo> garbageCollectorInfos =
+                new ArrayList<>(taskManagerMetricStore.garbageCollectorNames.size());
 
-		return garbageCollectorInfos;
-	}
+        for (String garbageCollectorName : taskManagerMetricStore.garbageCollectorNames) {
+            final String count =
+                    taskManagerMetricStore.getMetric(
+                            "Status.JVM.GarbageCollector." + garbageCollectorName + ".Count", null);
+            final String time =
+                    taskManagerMetricStore.getMetric(
+                            "Status.JVM.GarbageCollector." + garbageCollectorName + ".Time", null);
+
+            if (count != null && time != null) {
+                garbageCollectorInfos.add(
+                        new TaskManagerMetricsInfo.GarbageCollectorInfo(
+                                garbageCollectorName, Long.valueOf(count), Long.valueOf(time)));
+            }
+        }
+
+        return garbageCollectorInfos;
+    }
 }

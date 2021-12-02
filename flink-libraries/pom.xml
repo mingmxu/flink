@@ -25,23 +25,21 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.5-SNAPSHOT</version>
+		<version>1.15-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
 	<artifactId>flink-libraries</artifactId>
-	<name>flink-libraries</name>
+	<name>Flink : Libraries : </name>
 	<packaging>pom</packaging>
 
 	<modules>
 		<module>flink-gelly</module>
 		<module>flink-gelly-scala</module>
 		<module>flink-gelly-examples</module>
-		<module>flink-python</module>
-		<module>flink-table</module>
-		<module>flink-ml</module>
 		<module>flink-cep</module>
 		<module>flink-cep-scala</module>
+		<module>flink-state-processing-api</module>
 	</modules>
 
 	<!-- override these root dependencies as 'provided', so they don't end up
@@ -59,25 +57,10 @@ under the License.
 			<artifactId>jsr305</artifactId>
 			<scope>provided</scope>
 		</dependency>
-	</dependencies>
 
-	<build>
-		<plugins>
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-enforcer-plugin</artifactId>
-				<executions>
-					<execution>
-						<id>dependency-convergence</id>
-						<goals>
-							<goal>enforce</goal>
-						</goals>
-						<configuration>
-							<skip>true</skip>
-						</configuration>
-					</execution>
-				</executions>
-			</plugin>
-		</plugins>
-	</build>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-test-utils-junit</artifactId>
+		</dependency>
+	</dependencies>
 </project>

@@ -19,226 +19,161 @@
 package org.apache.flink.yarn;
 
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.akka.AkkaUtils;
-import org.apache.flink.runtime.clusterframework.ContaineredTaskManagerParameters;
-import org.apache.flink.runtime.clusterframework.messages.NotifyResourceStarted;
-import org.apache.flink.runtime.clusterframework.messages.RegisterResourceManager;
-import org.apache.flink.runtime.clusterframework.messages.RegisterResourceManagerSuccessful;
-import org.apache.flink.runtime.instance.AkkaActorGateway;
-import org.apache.flink.runtime.leaderelection.TestingLeaderRetrievalService;
-import org.apache.flink.runtime.messages.Acknowledge;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
+import org.apache.flink.core.testutils.FlinkMatchers;
+import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.TestLogger;
-import org.apache.flink.yarn.messages.NotifyWhenResourcesRegistered;
-import org.apache.flink.yarn.messages.RequestNumberOfRegisteredResources;
+import org.apache.flink.yarn.configuration.YarnConfigOptions;
 
-import akka.actor.ActorRef;
-import akka.actor.ActorSystem;
-import akka.actor.PoisonPill;
-import akka.actor.Props;
-import akka.testkit.JavaTestKit;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
-import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.apache.hadoop.yarn.api.records.Container;
-import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
-import org.apache.hadoop.yarn.api.records.NodeId;
-import org.apache.hadoop.yarn.client.api.AMRMClient;
-import org.apache.hadoop.yarn.client.api.NMClient;
-import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
-import org.mockito.Matchers;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
+import org.junit.rules.TemporaryFolder;
 
-import java.util.ArrayList;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
-import scala.Option;
-import scala.concurrent.Await;
-import scala.concurrent.Future;
-import scala.concurrent.duration.Deadline;
-import scala.concurrent.duration.FiniteDuration;
-
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-/**
- * Tests for {@link Utils}.
- */
+/** Tests for {@link Utils}. */
 public class UtilsTest extends TestLogger {
 
-	private static ActorSystem system;
+    private static final String YARN_RM_ARBITRARY_SCHEDULER_CLAZZ =
+            "org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler";
 
-	@BeforeClass
-	public static void setup() {
-		system = AkkaUtils.createLocalActorSystem(new Configuration());
-	}
+    @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
-	@AfterClass
-	public static void teardown() {
-		JavaTestKit.shutdownActorSystem(system);
-	}
+    @Test
+    public void testDeleteApplicationFiles() throws Exception {
+        final Path applicationFilesDir = temporaryFolder.newFolder(".flink").toPath();
+        Files.createFile(applicationFilesDir.resolve("flink.jar"));
+        try (Stream<Path> files = Files.list(temporaryFolder.getRoot().toPath())) {
+            assertThat(files.count(), equalTo(1L));
+        }
+        try (Stream<Path> files = Files.list(applicationFilesDir)) {
+            assertThat(files.count(), equalTo(1L));
+        }
 
-	@Test
-	public void testYarnFlinkResourceManagerJobManagerLostLeadership() throws Exception {
-		new JavaTestKit(system) {{
+        Utils.deleteApplicationFiles(applicationFilesDir.toString());
+        try (Stream<Path> files = Files.list(temporaryFolder.getRoot().toPath())) {
+            assertThat(files.count(), equalTo(0L));
+        }
+    }
 
-			final Deadline deadline = new FiniteDuration(3, TimeUnit.MINUTES).fromNow();
+    @Test
+    public void testGetUnitResource() {
+        final int minMem = 64;
+        final int minVcore = 1;
+        final int incMem = 512;
+        final int incVcore = 2;
+        final int incMemLegacy = 1024;
+        final int incVcoreLegacy = 4;
 
-			Configuration flinkConfig = new Configuration();
-			YarnConfiguration yarnConfig = new YarnConfiguration();
-			TestingLeaderRetrievalService leaderRetrievalService = new TestingLeaderRetrievalService(
-				null,
-				null);
-			String applicationMasterHostName = "localhost";
-			String webInterfaceURL = "foobar";
-			ContaineredTaskManagerParameters taskManagerParameters = new ContaineredTaskManagerParameters(
-				1L, 1L, 1L, 1, new HashMap<String, String>());
-			ContainerLaunchContext taskManagerLaunchContext = mock(ContainerLaunchContext.class);
-			int yarnHeartbeatIntervalMillis = 1000;
-			int maxFailedContainers = 10;
-			int numInitialTaskManagers = 5;
-			final YarnResourceManagerCallbackHandler callbackHandler = new YarnResourceManagerCallbackHandler();
-			AMRMClientAsync<AMRMClient.ContainerRequest> resourceManagerClient = mock(AMRMClientAsync.class);
-			NMClient nodeManagerClient = mock(NMClient.class);
-			UUID leaderSessionID = UUID.randomUUID();
+        YarnConfiguration yarnConfig = new YarnConfiguration();
+        yarnConfig.setInt(YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB, minMem);
+        yarnConfig.setInt(YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_VCORES, minVcore);
+        yarnConfig.setInt(Utils.YARN_RM_INCREMENT_ALLOCATION_MB_LEGACY_KEY, incMemLegacy);
+        yarnConfig.setInt(Utils.YARN_RM_INCREMENT_ALLOCATION_VCORES_LEGACY_KEY, incVcoreLegacy);
 
-			final List<Container> containerList = new ArrayList<>();
+        verifyUnitResourceVariousSchedulers(
+                yarnConfig, minMem, minVcore, incMemLegacy, incVcoreLegacy);
 
-			for (int i = 0; i < numInitialTaskManagers; i++) {
-				Container mockContainer = mock(Container.class);
-				when(mockContainer.getId()).thenReturn(
-					ContainerId.newInstance(
-						ApplicationAttemptId.newInstance(
-							ApplicationId.newInstance(System.currentTimeMillis(), 1),
-							1),
-						i));
-				when(mockContainer.getNodeId()).thenReturn(NodeId.newInstance("container", 1234));
-				containerList.add(mockContainer);
-			}
+        yarnConfig.setInt(Utils.YARN_RM_INCREMENT_ALLOCATION_MB_KEY, incMem);
+        yarnConfig.setInt(Utils.YARN_RM_INCREMENT_ALLOCATION_VCORES_KEY, incVcore);
 
-			doAnswer(new Answer() {
-				int counter = 0;
-				@Override
-				public Object answer(InvocationOnMock invocation) throws Throwable {
-					if (counter < containerList.size()) {
-						callbackHandler.onContainersAllocated(
-							Collections.singletonList(
-								containerList.get(counter++)
-							));
-					}
-					return null;
-				}
-			}).when(resourceManagerClient).addContainerRequest(Matchers.any(AMRMClient.ContainerRequest.class));
+        verifyUnitResourceVariousSchedulers(yarnConfig, minMem, minVcore, incMem, incVcore);
+    }
 
-			final CompletableFuture<AkkaActorGateway> resourceManagerFuture = new CompletableFuture<>();
-			final CompletableFuture<AkkaActorGateway> leaderGatewayFuture = new CompletableFuture<>();
+    @Test
+    public void testSharedLibWithNonQualifiedPath() throws Exception {
+        final String sharedLibPath = "/flink/sharedLib";
+        final String nonQualifiedPath = "hdfs://" + sharedLibPath;
+        final String defaultFs = "hdfs://localhost:9000";
+        final String qualifiedPath = defaultFs + sharedLibPath;
 
-			doAnswer(
-				(InvocationOnMock invocation) -> {
-					Container container = (Container) invocation.getArguments()[0];
-					resourceManagerFuture.thenCombine(leaderGatewayFuture,
-						(resourceManagerGateway, leaderGateway) -> {
-						resourceManagerGateway.tell(
-							new NotifyResourceStarted(YarnFlinkResourceManager.extractResourceID(container)),
-							leaderGateway);
-						return null;
-						});
-					return null;
-				})
-				.when(nodeManagerClient)
-				.startContainer(
-					Matchers.any(Container.class),
-					Matchers.any(ContainerLaunchContext.class));
+        final Configuration flinkConfig = new Configuration();
+        flinkConfig.set(
+                YarnConfigOptions.PROVIDED_LIB_DIRS, Collections.singletonList(nonQualifiedPath));
+        final YarnConfiguration yarnConfig = new YarnConfiguration();
+        yarnConfig.set(CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY, defaultFs);
 
-			ActorRef resourceManager = null;
-			ActorRef leader1;
+        final List<org.apache.hadoop.fs.Path> sharedLibs =
+                Utils.getQualifiedRemoteSharedPaths(flinkConfig, yarnConfig);
+        assertThat(sharedLibs.size(), is(1));
+        assertThat(sharedLibs.get(0).toUri().toString(), is(qualifiedPath));
+    }
 
-			try {
-				leader1 = system.actorOf(
-					Props.create(
-						TestingUtils.ForwardingActor.class,
-						getRef(),
-						Option.apply(leaderSessionID)
-					));
+    @Test
+    public void testSharedLibIsNotRemotePathShouldThrowException() throws IOException {
+        final String localLib = "file:///flink/sharedLib";
+        final Configuration flinkConfig = new Configuration();
+        flinkConfig.set(YarnConfigOptions.PROVIDED_LIB_DIRS, Collections.singletonList(localLib));
 
-				resourceManager = system.actorOf(
-					Props.create(
-						TestingYarnFlinkResourceManager.class,
-						flinkConfig,
-						yarnConfig,
-						leaderRetrievalService,
-						applicationMasterHostName,
-						webInterfaceURL,
-						taskManagerParameters,
-						taskManagerLaunchContext,
-						yarnHeartbeatIntervalMillis,
-						maxFailedContainers,
-						numInitialTaskManagers,
-						callbackHandler,
-						resourceManagerClient,
-						nodeManagerClient
-					));
+        try {
+            Utils.getQualifiedRemoteSharedPaths(flinkConfig, new YarnConfiguration());
+            fail("We should throw an exception when the shared lib is set to local path.");
+        } catch (FlinkException ex) {
+            final String msg =
+                    "The \""
+                            + YarnConfigOptions.PROVIDED_LIB_DIRS.key()
+                            + "\" should only "
+                            + "contain dirs accessible from all worker nodes";
+            assertThat(ex, FlinkMatchers.containsMessage(msg));
+        }
+    }
 
-				leaderRetrievalService.notifyListener(leader1.path().toString(), leaderSessionID);
+    @Test
+    public void testGetYarnConfiguration() {
+        final String flinkPrefix = "flink.yarn.";
+        final String yarnPrefix = "yarn.";
 
-				final AkkaActorGateway leader1Gateway = new AkkaActorGateway(leader1, leaderSessionID);
-				final AkkaActorGateway resourceManagerGateway = new AkkaActorGateway(resourceManager, leaderSessionID);
+        final String k1 = "brooklyn";
+        final String v1 = "nets";
 
-				leaderGatewayFuture.complete(leader1Gateway);
-				resourceManagerFuture.complete(resourceManagerGateway);
+        final String k2 = "golden.state";
+        final String v2 = "warriors";
 
-				expectMsgClass(deadline.timeLeft(), RegisterResourceManager.class);
+        final String k3 = "miami";
+        final String v3 = "heat";
 
-				resourceManagerGateway.tell(new RegisterResourceManagerSuccessful(leader1, Collections.EMPTY_LIST));
+        final Configuration flinkConfig = new Configuration();
+        flinkConfig.setString(flinkPrefix + k1, v1);
+        flinkConfig.setString(flinkPrefix + k2, v2);
+        flinkConfig.setString(k3, v3);
 
-				for (int i = 0; i < containerList.size(); i++) {
-					expectMsgClass(deadline.timeLeft(), Acknowledge.class);
-				}
+        final YarnConfiguration yarnConfig = Utils.getYarnConfiguration(flinkConfig);
 
-				Future<Object> taskManagerRegisteredFuture = resourceManagerGateway.ask(new NotifyWhenResourcesRegistered(numInitialTaskManagers), deadline.timeLeft());
+        assertEquals(v1, yarnConfig.get(yarnPrefix + k1, null));
+        assertEquals(v2, yarnConfig.get(yarnPrefix + k2, null));
+        assertTrue(yarnConfig.get(yarnPrefix + k3) == null);
+    }
 
-				Await.ready(taskManagerRegisteredFuture, deadline.timeLeft());
+    private static void verifyUnitResourceVariousSchedulers(
+            YarnConfiguration yarnConfig, int minMem, int minVcore, int incMem, int incVcore) {
+        yarnConfig.set(YarnConfiguration.RM_SCHEDULER, Utils.YARN_RM_FAIR_SCHEDULER_CLAZZ);
+        verifyUnitResource(yarnConfig, incMem, incVcore);
 
-				leaderRetrievalService.notifyListener(null, null);
+        yarnConfig.set(YarnConfiguration.RM_SCHEDULER, Utils.YARN_RM_SLS_FAIR_SCHEDULER_CLAZZ);
+        verifyUnitResource(yarnConfig, incMem, incVcore);
 
-				leaderRetrievalService.notifyListener(leader1.path().toString(), leaderSessionID);
+        yarnConfig.set(YarnConfiguration.RM_SCHEDULER, YARN_RM_ARBITRARY_SCHEDULER_CLAZZ);
+        verifyUnitResource(yarnConfig, minMem, minVcore);
+    }
 
-				expectMsgClass(deadline.timeLeft(), RegisterResourceManager.class);
-
-				resourceManagerGateway.tell(new RegisterResourceManagerSuccessful(leader1, Collections.EMPTY_LIST));
-
-				for (Container container: containerList) {
-					resourceManagerGateway.tell(
-						new NotifyResourceStarted(YarnFlinkResourceManager.extractResourceID(container)),
-						leader1Gateway);
-				}
-
-				for (int i = 0; i < containerList.size(); i++) {
-					expectMsgClass(deadline.timeLeft(), Acknowledge.class);
-				}
-
-				Future<Object> numberOfRegisteredResourcesFuture = resourceManagerGateway.ask(RequestNumberOfRegisteredResources.INSTANCE, deadline.timeLeft());
-
-				int numberOfRegisteredResources = (Integer) Await.result(numberOfRegisteredResourcesFuture, deadline.timeLeft());
-
-				assertEquals(numInitialTaskManagers, numberOfRegisteredResources);
-			} finally {
-				if (resourceManager != null) {
-					resourceManager.tell(PoisonPill.getInstance(), ActorRef.noSender());
-				}
-			}
-		}};
-	}
+    private static void verifyUnitResource(
+            YarnConfiguration yarnConfig, int expectedMem, int expectedVcore) {
+        final Resource unitResource = Utils.getUnitResource(yarnConfig);
+        assertThat(unitResource.getMemory(), is(expectedMem));
+        assertThat(unitResource.getVirtualCores(), is(expectedVcore));
+    }
 }

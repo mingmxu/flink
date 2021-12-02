@@ -20,161 +20,306 @@ package org.apache.flink.cep.nfa;
 
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.cep.Event;
-import org.apache.flink.cep.nfa.compiler.NFACompiler;
+import org.apache.flink.cep.nfa.aftermatch.AfterMatchSkipStrategy;
+import org.apache.flink.cep.nfa.sharedbuffer.SharedBuffer;
+import org.apache.flink.cep.nfa.sharedbuffer.SharedBufferAccessor;
 import org.apache.flink.cep.pattern.Pattern;
 import org.apache.flink.cep.pattern.conditions.IterativeCondition;
 import org.apache.flink.cep.pattern.conditions.SimpleCondition;
+import org.apache.flink.cep.time.TimerService;
+import org.apache.flink.cep.utils.TestSharedBuffer;
+import org.apache.flink.cep.utils.TestTimerService;
 import org.apache.flink.streaming.api.windowing.time.Time;
 
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
+import static org.apache.flink.cep.utils.NFAUtils.compile;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/**
- * Tests if the {@link NFA} status ({@link NFA#computationStates} or {@link NFA#eventSharedBuffer})
- * is changed after processing events.
- */
+/** Tests if the {@link NFAState} status is changed after processing events. */
 public class NFAStatusChangeITCase {
 
-	@Test
-	public void testNFAChange() {
-		Pattern<Event, ?> pattern = Pattern.<Event>begin("start").where(new SimpleCondition<Event>() {
-			private static final long serialVersionUID = 1858562682635302605L;
+    private SharedBuffer<Event> sharedBuffer;
+    private SharedBufferAccessor<Event> sharedBufferAccessor;
+    private AfterMatchSkipStrategy skipStrategy = AfterMatchSkipStrategy.noSkip();
+    private TimerService timerService = new TestTimerService();
 
-			@Override
-			public boolean filter(Event value) throws Exception {
-				return value.getName().equals("a");
-			}
-		}).followedByAny("middle").where(new IterativeCondition<Event>() {
-			private static final long serialVersionUID = 8061969839441121955L;
+    @Before
+    public void init() {
+        this.sharedBuffer = TestSharedBuffer.createTestBuffer(Event.createTypeSerializer());
+        sharedBufferAccessor = sharedBuffer.getAccessor();
+    }
 
-			@Override
-			public boolean filter(Event value, Context<Event> ctx) throws Exception {
-				return value.getName().equals("b");
-			}
-		}).oneOrMore().optional().allowCombinations().followedBy("middle2").where(new IterativeCondition<Event>() {
-			private static final long serialVersionUID = 8061969839441121955L;
+    @After
+    public void clear() throws Exception {
+        sharedBufferAccessor.close();
+    }
 
-			@Override
-			public boolean filter(Event value, Context<Event> ctx) throws Exception {
-				return value.getName().equals("d");
-			}
-		}).followedBy("end").where(new IterativeCondition<Event>() {
-			private static final long serialVersionUID = 8061969839441121955L;
+    @Test
+    public void testNFAChange() throws Exception {
+        Pattern<Event, ?> pattern =
+                Pattern.<Event>begin("start")
+                        .where(
+                                new SimpleCondition<Event>() {
+                                    private static final long serialVersionUID =
+                                            1858562682635302605L;
 
-			@Override
-			public boolean filter(Event value, Context<Event> ctx) throws Exception {
-				return value.getName().equals("e");
-			}
-		}).within(Time.milliseconds(10));
+                                    @Override
+                                    public boolean filter(Event value) throws Exception {
+                                        return value.getName().equals("a");
+                                    }
+                                })
+                        .followedByAny("middle")
+                        .where(
+                                new IterativeCondition<Event>() {
+                                    private static final long serialVersionUID =
+                                            8061969839441121955L;
 
-		NFACompiler.NFAFactory<Event> nfaFactory = NFACompiler.compileFactory(pattern, Event.createTypeSerializer(), true);
-		NFA<Event> nfa = nfaFactory.createNFA();
+                                    @Override
+                                    public boolean filter(Event value, Context<Event> ctx)
+                                            throws Exception {
+                                        return value.getName().equals("b");
+                                    }
+                                })
+                        .oneOrMore()
+                        .optional()
+                        .allowCombinations()
+                        .followedBy("middle2")
+                        .where(
+                                new IterativeCondition<Event>() {
+                                    private static final long serialVersionUID =
+                                            8061969839441121955L;
 
-		nfa.process(new Event(1, "b", 1.0), 1L);
-		assertFalse("NFA status should not change as the event does not match the take condition of the 'start' state", nfa.isNFAChanged());
+                                    @Override
+                                    public boolean filter(Event value, Context<Event> ctx)
+                                            throws Exception {
+                                        return value.getName().equals("d");
+                                    }
+                                })
+                        .followedBy("end")
+                        .where(
+                                new IterativeCondition<Event>() {
+                                    private static final long serialVersionUID =
+                                            8061969839441121955L;
 
-		nfa.resetNFAChanged();
-		nfa.process(new Event(2, "a", 1.0), 2L);
-		assertTrue("NFA status should change as the event matches the take condition of the 'start' state", nfa.isNFAChanged());
+                                    @Override
+                                    public boolean filter(Event value, Context<Event> ctx)
+                                            throws Exception {
+                                        return value.getName().equals("e");
+                                    }
+                                })
+                        .within(Time.milliseconds(10));
 
-		// the status of the queue of ComputationStatus changed,
-		// more than one ComputationStatus is generated by the event from some ComputationStatus
-		nfa.resetNFAChanged();
-		nfa.process(new Event(3, "f", 1.0), 3L);
-		assertTrue("NFA status should change as the event matches the ignore condition and proceed condition of the 'middle:1' state", nfa.isNFAChanged());
+        NFA<Event> nfa = compile(pattern, true);
 
-		// both the queue of ComputationStatus and eventSharedBuffer have not changed
-		nfa.resetNFAChanged();
-		nfa.process(new Event(4, "f", 1.0), 4L);
-		assertFalse("NFA status should not change as the event only matches the ignore condition of the 'middle:2' state and the target state is still 'middle:2'", nfa.isNFAChanged());
+        NFAState nfaState = nfa.createInitialNFAState();
 
-		// both the queue of ComputationStatus and eventSharedBuffer have changed
-		nfa.resetNFAChanged();
-		nfa.process(new Event(5, "b", 1.0), 5L);
-		assertTrue("NFA status should change as the event matches the take condition of 'middle:2' state", nfa.isNFAChanged());
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(1, "b", 1.0),
+                1L,
+                skipStrategy,
+                timerService);
+        assertFalse(
+                "NFA status should not change as the event does not match the take condition of the 'start' state",
+                nfaState.isStateChanged());
 
-		// both the queue of ComputationStatus and eventSharedBuffer have changed
-		nfa.resetNFAChanged();
-		nfa.process(new Event(6, "d", 1.0), 6L);
-		assertTrue("NFA status should change as the event matches the take condition of 'middle2' state", nfa.isNFAChanged());
+        nfaState.resetStateChanged();
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(2, "a", 1.0),
+                2L,
+                skipStrategy,
+                timerService);
+        assertTrue(
+                "NFA status should change as the event matches the take condition of the 'start' state",
+                nfaState.isStateChanged());
 
-		// both the queue of ComputationStatus and eventSharedBuffer have not changed
-		// as the timestamp is within the window
-		nfa.resetNFAChanged();
-		nfa.process(null, 8L);
-		assertFalse("NFA status should not change as the timestamp is within the window", nfa.isNFAChanged());
+        // the status of the queue of ComputationStatus changed,
+        // more than one ComputationStatus is generated by the event from some ComputationStatus
+        nfaState.resetStateChanged();
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(3, "f", 1.0),
+                3L,
+                skipStrategy,
+                timerService);
+        assertTrue(
+                "NFA status should change as the event matches the ignore condition and proceed condition of the 'middle:1' state",
+                nfaState.isStateChanged());
 
-		// timeout ComputationStatus will be removed from the queue of ComputationStatus and timeout event will
-		// be removed from eventSharedBuffer as the timeout happens
-		nfa.resetNFAChanged();
-		Collection<Tuple2<Map<String, List<Event>>, Long>> timeoutResults = nfa.process(null, 12L).f1;
-		assertTrue("NFA status should change as timeout happens", nfa.isNFAChanged() && !timeoutResults.isEmpty());
-	}
+        // both the queue of ComputationStatus and eventSharedBuffer have not changed
+        nfaState.resetStateChanged();
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(4, "f", 1.0),
+                4L,
+                skipStrategy,
+                timerService);
+        assertFalse(
+                "NFA status should not change as the event only matches the ignore condition of the 'middle:2' state and the target state is still 'middle:2'",
+                nfaState.isStateChanged());
 
-	@Test
-	public void testNFAChangedOnOneNewComputationState() {
-		Pattern<Event, ?> pattern = Pattern.<Event>begin("start").where(new SimpleCondition<Event>() {
-			@Override
-			public boolean filter(Event value) throws Exception {
-				return value.getName().equals("start");
-			}
-		}).followedBy("a*").where(new SimpleCondition<Event>() {
-			private static final long serialVersionUID = 1858562682635302605L;
+        // both the queue of ComputationStatus and eventSharedBuffer have changed
+        nfaState.resetStateChanged();
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(5, "b", 1.0),
+                5L,
+                skipStrategy,
+                timerService);
+        assertTrue(
+                "NFA status should change as the event matches the take condition of 'middle:2' state",
+                nfaState.isStateChanged());
 
-			@Override
-			public boolean filter(Event value) throws Exception {
-				return value.getName().equals("a");
-			}
-		}).oneOrMore().optional().next("end").where(new IterativeCondition<Event>() {
-			private static final long serialVersionUID = 8061969839441121955L;
+        // both the queue of ComputationStatus and eventSharedBuffer have changed
+        nfaState.resetStateChanged();
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(6, "d", 1.0),
+                6L,
+                skipStrategy,
+                timerService);
+        assertTrue(
+                "NFA status should change as the event matches the take condition of 'middle2' state",
+                nfaState.isStateChanged());
 
-			@Override
-			public boolean filter(Event value, Context<Event> ctx) throws Exception {
-				return value.getName().equals("b");
-			}
-		}).within(Time.milliseconds(10));
+        // both the queue of ComputationStatus and eventSharedBuffer have not changed
+        // as the timestamp is within the window
+        nfaState.resetStateChanged();
+        nfa.advanceTime(sharedBufferAccessor, nfaState, 8L);
+        assertFalse(
+                "NFA status should not change as the timestamp is within the window",
+                nfaState.isStateChanged());
 
-		NFACompiler.NFAFactory<Event> nfaFactory = NFACompiler.compileFactory(pattern, Event.createTypeSerializer(), true);
-		NFA<Event> nfa = nfaFactory.createNFA();
+        // timeout ComputationStatus will be removed from the queue of ComputationStatus and timeout
+        // event will
+        // be removed from eventSharedBuffer as the timeout happens
+        nfaState.resetStateChanged();
+        Collection<Tuple2<Map<String, List<Event>>, Long>> timeoutResults =
+                nfa.advanceTime(sharedBufferAccessor, nfaState, 12L);
+        assertTrue(
+                "NFA status should change as timeout happens",
+                nfaState.isStateChanged() && !timeoutResults.isEmpty());
+    }
 
-		nfa.resetNFAChanged();
-		nfa.process(new Event(6, "start", 1.0), 6L);
+    @Test
+    public void testNFAChangedOnOneNewComputationState() throws Exception {
+        Pattern<Event, ?> pattern =
+                Pattern.<Event>begin("start")
+                        .where(
+                                new SimpleCondition<Event>() {
+                                    @Override
+                                    public boolean filter(Event value) throws Exception {
+                                        return value.getName().equals("start");
+                                    }
+                                })
+                        .followedBy("a*")
+                        .where(
+                                new SimpleCondition<Event>() {
+                                    private static final long serialVersionUID =
+                                            1858562682635302605L;
 
-		nfa.resetNFAChanged();
-		nfa.process(new Event(6, "a", 1.0), 7L);
-		assertTrue(nfa.isNFAChanged());
-	}
+                                    @Override
+                                    public boolean filter(Event value) throws Exception {
+                                        return value.getName().equals("a");
+                                    }
+                                })
+                        .oneOrMore()
+                        .optional()
+                        .next("end")
+                        .where(
+                                new IterativeCondition<Event>() {
+                                    private static final long serialVersionUID =
+                                            8061969839441121955L;
 
-	@Test
-	public void testNFAChangedOnTimeoutWithoutPrune() {
-		Pattern<Event, ?> pattern = Pattern.<Event>begin("start").where(new IterativeCondition<Event>() {
-			@Override
-			public boolean filter(Event value, Context<Event> ctx) throws Exception {
-				return value.getName().equals("start");
-			}
-		}).followedBy("end").where(new IterativeCondition<Event>() {
-			private static final long serialVersionUID = 8061969839441121955L;
+                                    @Override
+                                    public boolean filter(Event value, Context<Event> ctx)
+                                            throws Exception {
+                                        return value.getName().equals("b");
+                                    }
+                                })
+                        .within(Time.milliseconds(10));
 
-			@Override
-			public boolean filter(Event value, Context<Event> ctx) throws Exception {
-				return value.getName().equals("end");
-			}
-		}).within(Time.milliseconds(10));
+        NFA<Event> nfa = compile(pattern, true);
 
-		NFACompiler.NFAFactory<Event> nfaFactory = NFACompiler.compileFactory(pattern, Event.createTypeSerializer(), true);
-		NFA<Event> nfa = nfaFactory.createNFA();
+        NFAState nfaState = nfa.createInitialNFAState();
 
-		nfa.resetNFAChanged();
-		nfa.process(new Event(6, "start", 1.0), 6L);
+        nfaState.resetStateChanged();
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(6, "start", 1.0),
+                6L,
+                skipStrategy,
+                timerService);
 
-		nfa.resetNFAChanged();
-		nfa.process(new Event(6, "end", 1.0), 17L);
-		assertTrue(nfa.isNFAChanged());
-	}
+        nfaState.resetStateChanged();
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(6, "a", 1.0),
+                7L,
+                skipStrategy,
+                timerService);
+        assertTrue(nfaState.isStateChanged());
+    }
+
+    @Test
+    public void testNFAChangedOnTimeoutWithoutPrune() throws Exception {
+        Pattern<Event, ?> pattern =
+                Pattern.<Event>begin("start")
+                        .where(
+                                new IterativeCondition<Event>() {
+                                    @Override
+                                    public boolean filter(Event value, Context<Event> ctx)
+                                            throws Exception {
+                                        return value.getName().equals("start");
+                                    }
+                                })
+                        .followedBy("end")
+                        .where(
+                                new IterativeCondition<Event>() {
+                                    private static final long serialVersionUID =
+                                            8061969839441121955L;
+
+                                    @Override
+                                    public boolean filter(Event value, Context<Event> ctx)
+                                            throws Exception {
+                                        return value.getName().equals("end");
+                                    }
+                                })
+                        .within(Time.milliseconds(10));
+
+        NFA<Event> nfa = compile(pattern, true);
+
+        NFAState nfaState = nfa.createInitialNFAState();
+
+        nfaState.resetStateChanged();
+        nfa.advanceTime(sharedBufferAccessor, nfaState, 6L);
+        nfa.process(
+                sharedBufferAccessor,
+                nfaState,
+                new Event(6, "start", 1.0),
+                6L,
+                skipStrategy,
+                timerService);
+
+        nfaState.resetStateChanged();
+        nfa.advanceTime(sharedBufferAccessor, nfaState, 17L);
+        assertTrue(nfaState.isStateChanged());
+    }
 }

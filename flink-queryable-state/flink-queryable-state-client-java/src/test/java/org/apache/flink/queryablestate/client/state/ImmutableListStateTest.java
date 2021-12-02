@@ -19,6 +19,7 @@
 package org.apache.flink.queryablestate.client.state;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
@@ -34,77 +35,73 @@ import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 
-/**
- * Tests the {@link ImmutableListState}.
- */
+/** Tests the {@link ImmutableListState}. */
 public class ImmutableListStateTest {
 
-	private final ListStateDescriptor<Long> listStateDesc =
-			new ListStateDescriptor<>("test", BasicTypeInfo.LONG_TYPE_INFO);
+    private final ListStateDescriptor<Long> listStateDesc =
+            new ListStateDescriptor<>("test", BasicTypeInfo.LONG_TYPE_INFO);
 
-	private ImmutableListState<Long> listState;
+    private ListState<Long> listState;
 
-	@Before
-	public void setUp() throws Exception {
-		if (!listStateDesc.isSerializerInitialized()) {
-			listStateDesc.initializeSerializerUnlessSet(new ExecutionConfig());
-		}
+    @Before
+    public void setUp() throws Exception {
+        if (!listStateDesc.isSerializerInitialized()) {
+            listStateDesc.initializeSerializerUnlessSet(new ExecutionConfig());
+        }
 
-		List<Long> init = new ArrayList<>();
-		init.add(42L);
+        List<Long> init = new ArrayList<>();
+        init.add(42L);
 
-		byte[] serInit = serializeInitValue(init);
-		listState = ImmutableListState.createState(listStateDesc, serInit);
-	}
+        byte[] serInit = serializeInitValue(init);
+        listState = ImmutableListState.createState(listStateDesc, serInit);
+    }
 
-	@Test(expected = UnsupportedOperationException.class)
-	public void testUpdate() {
-		List<Long> list = getStateContents();
-		assertEquals(1L, list.size());
+    @Test(expected = UnsupportedOperationException.class)
+    public void testUpdate() throws Exception {
+        List<Long> list = getStateContents();
+        assertEquals(1L, list.size());
 
-		long element = list.get(0);
-		assertEquals(42L, element);
+        long element = list.get(0);
+        assertEquals(42L, element);
 
-		listState.add(54L);
-	}
+        listState.add(54L);
+    }
 
-	@Test(expected = UnsupportedOperationException.class)
-	public void testClear() {
-		List<Long> list = getStateContents();
-		assertEquals(1L, list.size());
+    @Test(expected = UnsupportedOperationException.class)
+    public void testClear() throws Exception {
+        List<Long> list = getStateContents();
+        assertEquals(1L, list.size());
 
-		long element = list.get(0);
-		assertEquals(42L, element);
+        long element = list.get(0);
+        assertEquals(42L, element);
 
-		listState.clear();
-	}
+        listState.clear();
+    }
 
-	/**
-	 * Copied from HeapListState.getSerializedValue(Object, Object).
-	 */
-	private byte[] serializeInitValue(List<Long> toSerialize) throws IOException {
-		TypeSerializer<Long> serializer = listStateDesc.getElementSerializer();
+    /** Copied from HeapListState.getSerializedValue(Object, Object). */
+    private byte[] serializeInitValue(List<Long> toSerialize) throws IOException {
+        TypeSerializer<Long> serializer = listStateDesc.getElementSerializer();
 
-		ByteArrayOutputStream baos = new ByteArrayOutputStream();
-		DataOutputViewStreamWrapper view = new DataOutputViewStreamWrapper(baos);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputViewStreamWrapper view = new DataOutputViewStreamWrapper(baos);
 
-		// write the same as RocksDB writes lists, with one ',' separator
-		for (int i = 0; i < toSerialize.size(); i++) {
-			serializer.serialize(toSerialize.get(i), view);
-			if (i < toSerialize.size() - 1) {
-				view.writeByte(',');
-			}
-		}
-		view.flush();
+        // write the same as RocksDB writes lists, with one ',' separator
+        for (int i = 0; i < toSerialize.size(); i++) {
+            serializer.serialize(toSerialize.get(i), view);
+            if (i < toSerialize.size() - 1) {
+                view.writeByte(',');
+            }
+        }
+        view.flush();
 
-		return baos.toByteArray();
-	}
+        return baos.toByteArray();
+    }
 
-	private List<Long> getStateContents() {
-		List<Long> list = new ArrayList<>();
-		for (Long elem: listState.get()) {
-			list.add(elem);
-		}
-		return list;
-	}
+    private List<Long> getStateContents() throws Exception {
+        List<Long> list = new ArrayList<>();
+        for (Long elem : listState.get()) {
+            list.add(elem);
+        }
+        return list;
+    }
 }

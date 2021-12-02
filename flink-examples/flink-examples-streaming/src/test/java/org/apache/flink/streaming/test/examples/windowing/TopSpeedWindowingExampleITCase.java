@@ -17,34 +17,51 @@
 
 package org.apache.flink.streaming.test.examples.windowing;
 
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.examples.windowing.TopSpeedWindowing;
 import org.apache.flink.streaming.examples.windowing.util.TopSpeedWindowingExampleData;
-import org.apache.flink.streaming.util.StreamingProgramTestBase;
+import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.util.FileUtils;
+import org.apache.flink.util.TestLogger;
 
-/**
- * Tests for {@link TopSpeedWindowing}.
- */
-public class TopSpeedWindowingExampleITCase extends StreamingProgramTestBase {
+import org.junit.ClassRule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
-	protected String textPath;
-	protected String resultPath;
+import java.io.File;
 
-	@Override
-	protected void preSubmit() throws Exception {
-		setParallelism(1); //needed to ensure total ordering for windows
-		textPath = createTempFile("text.txt", TopSpeedWindowingExampleData.CAR_DATA);
-		resultPath = getTempDirPath("result");
-	}
+import static org.apache.flink.test.util.TestBaseUtils.compareResultsByLinesInMemory;
 
-	@Override
-	protected void postSubmit() throws Exception {
-		compareResultsByLinesInMemory(TopSpeedWindowingExampleData.TOP_SPEEDS, resultPath);
-	}
+/** Tests for {@link TopSpeedWindowing}. */
+public class TopSpeedWindowingExampleITCase extends TestLogger {
 
-	@Override
-	protected void testProgram() throws Exception {
-		TopSpeedWindowing.main(new String[]{
-				"--input", textPath,
-				"--output", resultPath});
-	}
+    @ClassRule public static TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+    @ClassRule
+    public static MiniClusterWithClientResource miniClusterResource =
+            new MiniClusterWithClientResource(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setNumberTaskManagers(1)
+                            .setNumberSlotsPerTaskManager(1)
+                            .build());
+
+    @Test
+    public void testTopSpeedWindowingExampleITCase() throws Exception {
+        File inputFile = temporaryFolder.newFile();
+        FileUtils.writeFileUtf8(inputFile, TopSpeedWindowingExampleData.CAR_DATA);
+
+        final String resultPath = temporaryFolder.newFolder().toURI().toString();
+
+        TopSpeedWindowing.main(
+                new String[] {
+                    "--input",
+                    inputFile.getAbsolutePath(),
+                    "--output",
+                    resultPath,
+                    "--execution-mode",
+                    "AUTOMATIC"
+                });
+
+        compareResultsByLinesInMemory(TopSpeedWindowingExampleData.TOP_SPEEDS, resultPath);
+    }
 }

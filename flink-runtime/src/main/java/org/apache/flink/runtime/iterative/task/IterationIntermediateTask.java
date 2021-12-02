@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.iterative.task;
 
 import org.apache.flink.api.common.functions.Function;
+import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.io.network.api.EndOfSuperstepEvent;
 import org.apache.flink.runtime.io.network.api.writer.RecordWriter;
 import org.apache.flink.runtime.iterative.concurrent.BlockingBackChannel;
@@ -34,99 +35,117 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 
 /**
- * An intermediate iteration task, which runs a {@link org.apache.flink.runtime.operators.Driver} inside.
+ * An intermediate iteration task, which runs a {@link org.apache.flink.runtime.operators.Driver}
+ * inside.
  *
- * <p>It will propagate {@link EndOfSuperstepEvent}s and {@link TerminationEvent}s to its connected tasks. Furthermore
- * intermediate tasks can also update the iteration state, either the workset or the solution set.
+ * <p>It will propagate {@link EndOfSuperstepEvent}s and {@link TerminationEvent}s to its connected
+ * tasks. Furthermore intermediate tasks can also update the iteration state, either the workset or
+ * the solution set.
  *
- * <p>If the iteration state is updated, the output of this task will be send back to the {@link IterationHeadTask} via
- * a {@link BlockingBackChannel} for the workset -XOR- a HashTable for the solution set. In this case
- * this task must be scheduled on the same instance as the head.
+ * <p>If the iteration state is updated, the output of this task will be send back to the {@link
+ * IterationHeadTask} via a {@link BlockingBackChannel} for the workset -XOR- a HashTable for the
+ * solution set. In this case this task must be scheduled on the same instance as the head.
  */
-public class IterationIntermediateTask<S extends Function, OT> extends AbstractIterativeTask<S, OT> {
+public class IterationIntermediateTask<S extends Function, OT>
+        extends AbstractIterativeTask<S, OT> {
 
-	private static final Logger log = LoggerFactory.getLogger(IterationIntermediateTask.class);
+    private static final Logger log = LoggerFactory.getLogger(IterationIntermediateTask.class);
 
-	private WorksetUpdateOutputCollector<OT> worksetUpdateOutputCollector;
+    private WorksetUpdateOutputCollector<OT> worksetUpdateOutputCollector;
 
-	@Override
-	protected void initialize() throws Exception {
-		super.initialize();
+    // --------------------------------------------------------------------------------------------
 
-		// set the last output collector of this task to reflect the iteration intermediate state update
-		// a) workset update
-		// b) solution set update
-		// c) none
+    /**
+     * Create an Invokable task and set its environment.
+     *
+     * @param environment The environment assigned to this invokable.
+     */
+    public IterationIntermediateTask(Environment environment) {
+        super(environment);
+    }
 
-		Collector<OT> delegate = getLastOutputCollector();
-		if (isWorksetUpdate) {
-			// sanity check: we should not have a solution set and workset update at the same time
-			// in an intermediate task
-			if (isSolutionSetUpdate) {
-				throw new IllegalStateException("Plan bug: Intermediate task performs workset and solutions set update.");
-			}
+    // --------------------------------------------------------------------------------------------
 
-			Collector<OT> outputCollector = createWorksetUpdateOutputCollector(delegate);
+    @Override
+    protected void initialize() throws Exception {
+        super.initialize();
 
-			// we need the WorksetUpdateOutputCollector separately to count the collected elements
-			if (isWorksetIteration) {
-				worksetUpdateOutputCollector = (WorksetUpdateOutputCollector<OT>) outputCollector;
-			}
+        // set the last output collector of this task to reflect the iteration intermediate state
+        // update
+        // a) workset update
+        // b) solution set update
+        // c) none
 
-			setLastOutputCollector(outputCollector);
-		} else if (isSolutionSetUpdate) {
-			setLastOutputCollector(createSolutionSetUpdateOutputCollector(delegate));
-		}
-	}
+        Collector<OT> delegate = getLastOutputCollector();
+        if (isWorksetUpdate) {
+            // sanity check: we should not have a solution set and workset update at the same time
+            // in an intermediate task
+            if (isSolutionSetUpdate) {
+                throw new IllegalStateException(
+                        "Plan bug: Intermediate task performs workset and solutions set update.");
+            }
 
-	@Override
-	public void run() throws Exception {
+            Collector<OT> outputCollector = createWorksetUpdateOutputCollector(delegate);
 
-		SuperstepKickoffLatch nextSuperstepLatch = SuperstepKickoffLatchBroker.instance().get(brokerKey());
+            // we need the WorksetUpdateOutputCollector separately to count the collected elements
+            if (isWorksetIteration) {
+                worksetUpdateOutputCollector = (WorksetUpdateOutputCollector<OT>) outputCollector;
+            }
 
-		while (this.running && !terminationRequested()) {
+            setLastOutputCollector(outputCollector);
+        } else if (isSolutionSetUpdate) {
+            setLastOutputCollector(createSolutionSetUpdateOutputCollector(delegate));
+        }
+    }
 
-			if (log.isInfoEnabled()) {
-				log.info(formatLogString("starting iteration [" + currentIteration() + "]"));
-			}
+    @Override
+    public void run() throws Exception {
 
-			super.run();
+        SuperstepKickoffLatch nextSuperstepLatch =
+                SuperstepKickoffLatchBroker.instance().get(brokerKey());
 
-			// check if termination was requested
-			verifyEndOfSuperstepState();
+        while (this.running && !terminationRequested()) {
 
-			if (isWorksetUpdate && isWorksetIteration) {
-				long numCollected = worksetUpdateOutputCollector.getElementsCollectedAndReset();
-				worksetAggregator.aggregate(numCollected);
-			}
+            if (log.isInfoEnabled()) {
+                log.info(formatLogString("starting iteration [" + currentIteration() + "]"));
+            }
 
-			if (log.isInfoEnabled()) {
-				log.info(formatLogString("finishing iteration [" + currentIteration() + "]"));
-			}
+            super.run();
 
-			// let the successors know that the end of this superstep data is reached
-			sendEndOfSuperstep();
+            // check if termination was requested
+            verifyEndOfSuperstepState();
 
-			if (isWorksetUpdate) {
-				// notify iteration head if responsible for workset update
-				worksetBackChannel.notifyOfEndOfSuperstep();
-			}
+            if (isWorksetUpdate && isWorksetIteration) {
+                long numCollected = worksetUpdateOutputCollector.getElementsCollectedAndReset();
+                worksetAggregator.aggregate(numCollected);
+            }
 
-			boolean terminated = nextSuperstepLatch.awaitStartOfSuperstepOrTermination(currentIteration() + 1);
+            if (log.isInfoEnabled()) {
+                log.info(formatLogString("finishing iteration [" + currentIteration() + "]"));
+            }
 
-			if (terminated) {
-				requestTermination();
-			}
-			else {
-				incrementIterationCounter();
-			}
-		}
-	}
+            // let the successors know that the end of this superstep data is reached
+            sendEndOfSuperstep();
 
-	private void sendEndOfSuperstep() throws IOException, InterruptedException {
-		for (RecordWriter eventualOutput : this.eventualOutputs) {
-			eventualOutput.broadcastEvent(EndOfSuperstepEvent.INSTANCE);
-		}
-	}
+            if (isWorksetUpdate) {
+                // notify iteration head if responsible for workset update
+                worksetBackChannel.notifyOfEndOfSuperstep();
+            }
 
+            boolean terminated =
+                    nextSuperstepLatch.awaitStartOfSuperstepOrTermination(currentIteration() + 1);
+
+            if (terminated) {
+                requestTermination();
+            } else {
+                incrementIterationCounter();
+            }
+        }
+    }
+
+    private void sendEndOfSuperstep() throws IOException, InterruptedException {
+        for (RecordWriter eventualOutput : this.eventualOutputs) {
+            eventualOutput.broadcastEvent(EndOfSuperstepEvent.INSTANCE);
+        }
+    }
 }

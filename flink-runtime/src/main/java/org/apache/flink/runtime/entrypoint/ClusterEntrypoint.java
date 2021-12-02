@@ -19,285 +19,638 @@
 package org.apache.flink.runtime.entrypoint;
 
 import org.apache.flink.api.common.time.Time;
-import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.configuration.ClusterOptions;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.HighAvailabilityOptions;
+import org.apache.flink.configuration.IllegalConfigurationException;
+import org.apache.flink.configuration.JMXServerOptions;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.SchedulerExecutionMode;
+import org.apache.flink.configuration.WebOptions;
 import org.apache.flink.core.fs.FileSystem;
-import org.apache.flink.runtime.akka.AkkaUtils;
+import org.apache.flink.core.plugin.PluginManager;
+import org.apache.flink.core.plugin.PluginUtils;
+import org.apache.flink.core.security.FlinkSecurityManager;
+import org.apache.flink.management.jmx.JMXService;
 import org.apache.flink.runtime.blob.BlobServer;
-import org.apache.flink.runtime.clusterframework.BootstrapTools;
+import org.apache.flink.runtime.clusterframework.ApplicationStatus;
+import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
+import org.apache.flink.runtime.dispatcher.MiniDispatcher;
+import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponent;
+import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
+import org.apache.flink.runtime.entrypoint.parser.CommandLineParser;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils;
-import org.apache.flink.runtime.metrics.MetricRegistry;
 import org.apache.flink.runtime.metrics.MetricRegistryConfiguration;
 import org.apache.flink.runtime.metrics.MetricRegistryImpl;
+import org.apache.flink.runtime.metrics.ReporterSetup;
+import org.apache.flink.runtime.metrics.groups.ProcessMetricGroup;
+import org.apache.flink.runtime.metrics.util.MetricUtils;
+import org.apache.flink.runtime.resourcemanager.ResourceManager;
+import org.apache.flink.runtime.rpc.AddressResolution;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
-import org.apache.flink.runtime.rpc.akka.AkkaRpcService;
+import org.apache.flink.runtime.rpc.RpcSystem;
+import org.apache.flink.runtime.rpc.RpcSystemUtils;
+import org.apache.flink.runtime.rpc.RpcUtils;
 import org.apache.flink.runtime.security.SecurityConfiguration;
-import org.apache.flink.runtime.security.SecurityContext;
 import org.apache.flink.runtime.security.SecurityUtils;
+import org.apache.flink.runtime.security.contexts.SecurityContext;
+import org.apache.flink.runtime.util.ZooKeeperUtils;
+import org.apache.flink.runtime.webmonitor.retriever.impl.RpcMetricQueryServiceRetriever;
+import org.apache.flink.util.AutoCloseableAsync;
 import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.ExecutorUtils;
+import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.ShutdownHookUtil;
+import org.apache.flink.util.concurrent.ExecutorThreadFactory;
+import org.apache.flink.util.concurrent.FutureUtils;
+import org.apache.flink.util.concurrent.ScheduledExecutor;
 
-import akka.actor.ActorSystem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.UndeclaredThrowableException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
-
-import scala.concurrent.duration.FiniteDuration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Base class for the Flink cluster entry points.
  *
  * <p>Specialization of this class can be used for the session mode and the per-job mode
  */
-public abstract class ClusterEntrypoint implements FatalErrorHandler {
+public abstract class ClusterEntrypoint implements AutoCloseableAsync, FatalErrorHandler {
 
-	protected static final Logger LOG = LoggerFactory.getLogger(ClusterEntrypoint.class);
+    public static final ConfigOption<String> INTERNAL_CLUSTER_EXECUTION_MODE =
+            ConfigOptions.key("internal.cluster.execution-mode")
+                    .defaultValue(ExecutionMode.NORMAL.toString());
 
-	protected static final int SUCCESS_RETURN_CODE = 0;
-	protected static final int STARTUP_FAILURE_RETURN_CODE = 1;
-	protected static final int RUNTIME_FAILURE_RETURN_CODE = 2;
+    protected static final Logger LOG = LoggerFactory.getLogger(ClusterEntrypoint.class);
 
-	/** The lock to guard startup / shutdown / manipulation methods. */
-	private final Object lock = new Object();
+    protected static final int STARTUP_FAILURE_RETURN_CODE = 1;
+    protected static final int RUNTIME_FAILURE_RETURN_CODE = 2;
 
-	private final Configuration configuration;
+    private static final Time INITIALIZATION_SHUTDOWN_TIMEOUT = Time.seconds(30L);
 
-	private final CompletableFuture<Boolean> terminationFuture;
+    /** The lock to guard startup / shutdown / manipulation methods. */
+    private final Object lock = new Object();
 
-	@GuardedBy("lock")
-	private MetricRegistryImpl metricRegistry = null;
+    private final Configuration configuration;
 
-	@GuardedBy("lock")
-	private HighAvailabilityServices haServices = null;
+    private final CompletableFuture<ApplicationStatus> terminationFuture;
 
-	@GuardedBy("lock")
-	private BlobServer blobServer = null;
+    private final AtomicBoolean isShutDown = new AtomicBoolean(false);
 
-	@GuardedBy("lock")
-	private HeartbeatServices heartbeatServices = null;
+    @GuardedBy("lock")
+    private DispatcherResourceManagerComponent clusterComponent;
 
-	@GuardedBy("lock")
-	private RpcService commonRpcService = null;
+    @GuardedBy("lock")
+    private MetricRegistryImpl metricRegistry;
 
-	protected ClusterEntrypoint(Configuration configuration) {
-		this.configuration = Preconditions.checkNotNull(configuration);
-		this.terminationFuture = new CompletableFuture<>();
-	}
+    @GuardedBy("lock")
+    private ProcessMetricGroup processMetricGroup;
 
-	public CompletableFuture<Boolean> getTerminationFuture() {
-		return terminationFuture;
-	}
+    @GuardedBy("lock")
+    private HighAvailabilityServices haServices;
 
-	protected void startCluster() {
-		LOG.info("Starting {}.", getClass().getSimpleName());
+    @GuardedBy("lock")
+    private BlobServer blobServer;
 
-		try {
-			configureFileSystems(configuration);
+    @GuardedBy("lock")
+    private HeartbeatServices heartbeatServices;
 
-			SecurityContext securityContext = installSecurityContext(configuration);
+    @GuardedBy("lock")
+    private RpcService commonRpcService;
 
-			securityContext.runSecured(new Callable<Void>() {
-				@Override
-				public Void call() throws Exception {
-					runCluster(configuration);
+    @GuardedBy("lock")
+    private ExecutorService ioExecutor;
 
-					return null;
-				}
-			});
-		} catch (Throwable t) {
-			LOG.error("Cluster initialization failed.", t);
+    private ExecutionGraphInfoStore executionGraphInfoStore;
 
-			try {
-				shutDown(false);
-			} catch (Throwable st) {
-				LOG.error("Could not properly shut down cluster entrypoint.", st);
-			}
+    private final Thread shutDownHook;
+    private RpcSystem rpcSystem;
 
-			System.exit(STARTUP_FAILURE_RETURN_CODE);
-		}
-	}
+    protected ClusterEntrypoint(Configuration configuration) {
+        this.configuration = generateClusterConfiguration(configuration);
+        this.terminationFuture = new CompletableFuture<>();
 
-	protected void configureFileSystems(Configuration configuration) throws Exception {
-		LOG.info("Install default filesystem.");
+        if (configuration.get(JobManagerOptions.SCHEDULER_MODE) == SchedulerExecutionMode.REACTIVE
+                && !supportsReactiveMode()) {
+            final String msg =
+                    "Reactive mode is configured for an unsupported cluster type. At the moment, reactive mode is only supported by standalone application clusters (bin/standalone-job.sh).";
+            // log message as well, otherwise the error is only shown in the .out file of the
+            // cluster
+            LOG.error(msg);
+            throw new IllegalConfigurationException(msg);
+        }
 
-		try {
-			FileSystem.initialize(configuration);
-		} catch (IOException e) {
-			throw new IOException("Error while setting the default " +
-				"filesystem scheme from configuration.", e);
-		}
-	}
+        shutDownHook =
+                ShutdownHookUtil.addShutdownHook(
+                        () -> this.closeAsync().join(), getClass().getSimpleName(), LOG);
+    }
 
-	protected SecurityContext installSecurityContext(Configuration configuration) throws Exception {
-		LOG.info("Install security context.");
+    public CompletableFuture<ApplicationStatus> getTerminationFuture() {
+        return terminationFuture;
+    }
 
-		SecurityUtils.install(new SecurityConfiguration(configuration));
+    public void startCluster() throws ClusterEntrypointException {
+        LOG.info("Starting {}.", getClass().getSimpleName());
 
-		return SecurityUtils.getInstalledContext();
-	}
+        try {
+            FlinkSecurityManager.setFromConfiguration(configuration);
+            PluginManager pluginManager =
+                    PluginUtils.createPluginManagerFromRootFolder(configuration);
+            configureFileSystems(configuration, pluginManager);
 
-	protected void runCluster(Configuration configuration) throws Exception {
-		synchronized (lock) {
-			initializeServices(configuration);
+            SecurityContext securityContext = installSecurityContext(configuration);
 
-			// write host information into configuration
-			configuration.setString(JobManagerOptions.ADDRESS, commonRpcService.getAddress());
-			configuration.setInteger(JobManagerOptions.PORT, commonRpcService.getPort());
+            ClusterEntrypointUtils.configureUncaughtExceptionHandler(configuration);
+            securityContext.runSecured(
+                    (Callable<Void>)
+                            () -> {
+                                runCluster(configuration, pluginManager);
 
-			startClusterComponents(
-				configuration,
-				commonRpcService,
-				haServices,
-				blobServer,
-				heartbeatServices,
-				metricRegistry);
-		}
-	}
+                                return null;
+                            });
+        } catch (Throwable t) {
+            final Throwable strippedThrowable =
+                    ExceptionUtils.stripException(t, UndeclaredThrowableException.class);
 
-	protected void initializeServices(Configuration configuration) throws Exception {
-		assert(Thread.holdsLock(lock));
+            try {
+                // clean up any partial state
+                shutDownAsync(
+                                ApplicationStatus.FAILED,
+                                ShutdownBehaviour.STOP_APPLICATION,
+                                ExceptionUtils.stringifyException(strippedThrowable),
+                                false)
+                        .get(
+                                INITIALIZATION_SHUTDOWN_TIMEOUT.toMilliseconds(),
+                                TimeUnit.MILLISECONDS);
+            } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                strippedThrowable.addSuppressed(e);
+            }
 
-		LOG.info("Initializing cluster services.");
+            throw new ClusterEntrypointException(
+                    String.format(
+                            "Failed to initialize the cluster entrypoint %s.",
+                            getClass().getSimpleName()),
+                    strippedThrowable);
+        }
+    }
 
-		final String bindAddress = configuration.getString(JobManagerOptions.ADDRESS);
-		// TODO: Add support for port ranges
-		final String portRange = String.valueOf(configuration.getInteger(JobManagerOptions.PORT));
+    protected boolean supportsReactiveMode() {
+        return false;
+    }
 
-		commonRpcService = createRpcService(configuration, bindAddress, portRange);
-		haServices = createHaServices(configuration, commonRpcService.getExecutor());
-		blobServer = new BlobServer(configuration, haServices.createBlobStore());
-		blobServer.start();
-		heartbeatServices = createHeartbeatServices(configuration);
-		metricRegistry = createMetricRegistry(configuration);
+    private void configureFileSystems(Configuration configuration, PluginManager pluginManager) {
+        LOG.info("Install default filesystem.");
+        FileSystem.initialize(configuration, pluginManager);
+    }
 
-		// TODO: This is a temporary hack until we have ported the MetricQueryService to the new RpcEndpoint
-		// start the MetricQueryService
-		final ActorSystem actorSystem = ((AkkaRpcService) commonRpcService).getActorSystem();
-		metricRegistry.startQueryService(actorSystem, null);
-	}
+    private SecurityContext installSecurityContext(Configuration configuration) throws Exception {
+        LOG.info("Install security context.");
 
-	protected RpcService createRpcService(
-			Configuration configuration,
-			String bindAddress,
-			String portRange) throws Exception {
-		ActorSystem actorSystem = BootstrapTools.startActorSystem(configuration, bindAddress, portRange, LOG);
-		FiniteDuration duration = AkkaUtils.getTimeout(configuration);
-		return new AkkaRpcService(actorSystem, Time.of(duration.length(), duration.unit()));
-	}
+        SecurityUtils.install(new SecurityConfiguration(configuration));
 
-	protected HighAvailabilityServices createHaServices(
-		Configuration configuration,
-		Executor executor) throws Exception {
-		return HighAvailabilityServicesUtils.createHighAvailabilityServices(
-			configuration,
-			executor,
-			HighAvailabilityServicesUtils.AddressResolution.NO_ADDRESS_RESOLUTION);
-	}
+        return SecurityUtils.getInstalledContext();
+    }
 
-	protected HeartbeatServices createHeartbeatServices(Configuration configuration) {
-		return HeartbeatServices.fromConfiguration(configuration);
-	}
+    private void runCluster(Configuration configuration, PluginManager pluginManager)
+            throws Exception {
+        synchronized (lock) {
+            initializeServices(configuration, pluginManager);
 
-	protected MetricRegistryImpl createMetricRegistry(Configuration configuration) {
-		return new MetricRegistryImpl(MetricRegistryConfiguration.fromConfiguration(configuration));
-	}
+            // write host information into configuration
+            configuration.setString(JobManagerOptions.ADDRESS, commonRpcService.getAddress());
+            configuration.setInteger(JobManagerOptions.PORT, commonRpcService.getPort());
 
-	protected void shutDown(boolean cleanupHaData) throws FlinkException {
-		LOG.info("Stopping {}.", getClass().getSimpleName());
+            final DispatcherResourceManagerComponentFactory
+                    dispatcherResourceManagerComponentFactory =
+                            createDispatcherResourceManagerComponentFactory(configuration);
 
-		Throwable exception = null;
+            clusterComponent =
+                    dispatcherResourceManagerComponentFactory.create(
+                            configuration,
+                            ioExecutor,
+                            commonRpcService,
+                            haServices,
+                            blobServer,
+                            heartbeatServices,
+                            metricRegistry,
+                            executionGraphInfoStore,
+                            new RpcMetricQueryServiceRetriever(
+                                    metricRegistry.getMetricQueryServiceRpcService()),
+                            this);
 
-		synchronized (lock) {
+            clusterComponent
+                    .getShutDownFuture()
+                    .whenComplete(
+                            (ApplicationStatus applicationStatus, Throwable throwable) -> {
+                                if (throwable != null) {
+                                    shutDownAsync(
+                                            ApplicationStatus.UNKNOWN,
+                                            ShutdownBehaviour.STOP_APPLICATION,
+                                            ExceptionUtils.stringifyException(throwable),
+                                            false);
+                                } else {
+                                    // This is the general shutdown path. If a separate more
+                                    // specific shutdown was
+                                    // already triggered, this will do nothing
+                                    shutDownAsync(
+                                            applicationStatus,
+                                            ShutdownBehaviour.STOP_APPLICATION,
+                                            null,
+                                            true);
+                                }
+                            });
+        }
+    }
 
-			try {
-				stopClusterComponents(cleanupHaData);
-			} catch (Throwable t) {
-				exception = ExceptionUtils.firstOrSuppressed(t, exception);
-			}
+    protected void initializeServices(Configuration configuration, PluginManager pluginManager)
+            throws Exception {
 
-			if (metricRegistry != null) {
-				try {
-					metricRegistry.shutdown();
-				} catch (Throwable t) {
-					exception = t;
-				}
-			}
+        LOG.info("Initializing cluster services.");
 
-			if (blobServer != null) {
-				try {
-					blobServer.close();
-				} catch (Throwable t) {
-					exception = ExceptionUtils.firstOrSuppressed(t, exception);
-				}
-			}
+        synchronized (lock) {
+            rpcSystem = RpcSystem.load(configuration);
 
-			if (haServices != null) {
-				try {
-					if (cleanupHaData) {
-						haServices.closeAndCleanupAllData();
-					} else {
-						haServices.close();
-					}
-				} catch (Throwable t) {
-					exception = ExceptionUtils.firstOrSuppressed(t, exception);
-				}
-			}
+            commonRpcService =
+                    RpcUtils.createRemoteRpcService(
+                            rpcSystem,
+                            configuration,
+                            configuration.getString(JobManagerOptions.ADDRESS),
+                            getRPCPortRange(configuration),
+                            configuration.getString(JobManagerOptions.BIND_HOST),
+                            configuration.getOptional(JobManagerOptions.RPC_BIND_PORT));
 
-			if (commonRpcService != null) {
-				try {
-					commonRpcService.stopService();
-				} catch (Throwable t) {
-					exception = ExceptionUtils.firstOrSuppressed(t, exception);
-				}
-			}
+            JMXService.startInstance(configuration.getString(JMXServerOptions.JMX_SERVER_PORT));
 
-			terminationFuture.complete(true);
-		}
+            // update the configuration used to create the high availability services
+            configuration.setString(JobManagerOptions.ADDRESS, commonRpcService.getAddress());
+            configuration.setInteger(JobManagerOptions.PORT, commonRpcService.getPort());
 
-		if (exception != null) {
-			throw new FlinkException("Could not properly shut down the cluster services.", exception);
-		}
-	}
+            ioExecutor =
+                    Executors.newFixedThreadPool(
+                            ClusterEntrypointUtils.getPoolSize(configuration),
+                            new ExecutorThreadFactory("cluster-io"));
+            haServices = createHaServices(configuration, ioExecutor, rpcSystem);
+            blobServer = new BlobServer(configuration, haServices.createBlobStore());
+            blobServer.start();
+            heartbeatServices = createHeartbeatServices(configuration);
+            metricRegistry = createMetricRegistry(configuration, pluginManager, rpcSystem);
 
-	@Override
-	public void onFatalError(Throwable exception) {
-		LOG.error("Fatal error occurred in the cluster entrypoint.", exception);
+            final RpcService metricQueryServiceRpcService =
+                    MetricUtils.startRemoteMetricsRpcService(
+                            configuration, commonRpcService.getAddress(), rpcSystem);
+            metricRegistry.startQueryService(metricQueryServiceRpcService, null);
 
-		System.exit(RUNTIME_FAILURE_RETURN_CODE);
-	}
+            final String hostname = RpcUtils.getHostname(commonRpcService);
 
-	protected abstract void startClusterComponents(
-		Configuration configuration,
-		RpcService rpcService,
-		HighAvailabilityServices highAvailabilityServices,
-		BlobServer blobServer,
-		HeartbeatServices heartbeatServices,
-		MetricRegistry metricRegistry) throws Exception;
+            processMetricGroup =
+                    MetricUtils.instantiateProcessMetricGroup(
+                            metricRegistry,
+                            hostname,
+                            ConfigurationUtils.getSystemResourceMetricsProbingInterval(
+                                    configuration));
 
-	protected void stopClusterComponents(boolean cleanupHaData) throws Exception {
-	}
+            executionGraphInfoStore =
+                    createSerializableExecutionGraphStore(
+                            configuration, commonRpcService.getScheduledExecutor());
+        }
+    }
 
-	protected static ClusterConfiguration parseArguments(String[] args) {
-		ParameterTool parameterTool = ParameterTool.fromArgs(args);
+    /**
+     * Returns the port range for the common {@link RpcService}.
+     *
+     * @param configuration to extract the port range from
+     * @return Port range for the common {@link RpcService}
+     */
+    protected String getRPCPortRange(Configuration configuration) {
+        if (ZooKeeperUtils.isZooKeeperRecoveryMode(configuration)) {
+            return configuration.getString(HighAvailabilityOptions.HA_JOB_MANAGER_PORT_RANGE);
+        } else {
+            return String.valueOf(configuration.getInteger(JobManagerOptions.PORT));
+        }
+    }
 
-		final String configDir = parameterTool.get("configDir", "");
+    protected HighAvailabilityServices createHaServices(
+            Configuration configuration, Executor executor, RpcSystemUtils rpcSystemUtils)
+            throws Exception {
+        return HighAvailabilityServicesUtils.createHighAvailabilityServices(
+                configuration,
+                executor,
+                AddressResolution.NO_ADDRESS_RESOLUTION,
+                rpcSystemUtils,
+                this);
+    }
 
-		return new ClusterConfiguration(configDir);
-	}
+    protected HeartbeatServices createHeartbeatServices(Configuration configuration) {
+        return HeartbeatServices.fromConfiguration(configuration);
+    }
 
-	protected static Configuration loadConfiguration(ClusterConfiguration clusterConfiguration) {
-		return GlobalConfiguration.loadConfiguration(clusterConfiguration.getConfigDir());
-	}
+    protected MetricRegistryImpl createMetricRegistry(
+            Configuration configuration,
+            PluginManager pluginManager,
+            RpcSystemUtils rpcSystemUtils) {
+        return new MetricRegistryImpl(
+                MetricRegistryConfiguration.fromConfiguration(
+                        configuration, rpcSystemUtils.getMaximumMessageSizeInBytes(configuration)),
+                ReporterSetup.fromConfiguration(configuration, pluginManager));
+    }
+
+    @Override
+    public CompletableFuture<Void> closeAsync() {
+        ShutdownHookUtil.removeShutdownHook(shutDownHook, getClass().getSimpleName(), LOG);
+
+        return shutDownAsync(
+                        ApplicationStatus.UNKNOWN,
+                        ShutdownBehaviour.STOP_PROCESS,
+                        "Cluster entrypoint has been closed externally.",
+                        false)
+                .thenAccept(ignored -> {});
+    }
+
+    protected CompletableFuture<Void> stopClusterServices(boolean cleanupHaData) {
+        final long shutdownTimeout =
+                configuration.getLong(ClusterOptions.CLUSTER_SERVICES_SHUTDOWN_TIMEOUT);
+
+        synchronized (lock) {
+            Throwable exception = null;
+
+            final Collection<CompletableFuture<Void>> terminationFutures = new ArrayList<>(3);
+
+            if (blobServer != null) {
+                try {
+                    blobServer.close();
+                } catch (Throwable t) {
+                    exception = ExceptionUtils.firstOrSuppressed(t, exception);
+                }
+            }
+
+            if (haServices != null) {
+                try {
+                    if (cleanupHaData) {
+                        haServices.closeAndCleanupAllData();
+                    } else {
+                        haServices.close();
+                    }
+                } catch (Throwable t) {
+                    exception = ExceptionUtils.firstOrSuppressed(t, exception);
+                }
+            }
+
+            if (executionGraphInfoStore != null) {
+                try {
+                    executionGraphInfoStore.close();
+                } catch (Throwable t) {
+                    exception = ExceptionUtils.firstOrSuppressed(t, exception);
+                }
+            }
+
+            if (processMetricGroup != null) {
+                processMetricGroup.close();
+            }
+
+            if (metricRegistry != null) {
+                terminationFutures.add(metricRegistry.shutdown());
+            }
+
+            if (ioExecutor != null) {
+                terminationFutures.add(
+                        ExecutorUtils.nonBlockingShutdown(
+                                shutdownTimeout, TimeUnit.MILLISECONDS, ioExecutor));
+            }
+
+            if (commonRpcService != null) {
+                terminationFutures.add(commonRpcService.stopService());
+            }
+
+            try {
+                JMXService.stopInstance();
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
+
+            if (exception != null) {
+                terminationFutures.add(FutureUtils.completedExceptionally(exception));
+            }
+
+            return FutureUtils.completeAll(terminationFutures);
+        }
+    }
+
+    @Override
+    public void onFatalError(Throwable exception) {
+        ClusterEntryPointExceptionUtils.tryEnrichClusterEntryPointError(exception);
+        LOG.error("Fatal error occurred in the cluster entrypoint.", exception);
+
+        FlinkSecurityManager.forceProcessExit(RUNTIME_FAILURE_RETURN_CODE);
+    }
+
+    // --------------------------------------------------
+    // Internal methods
+    // --------------------------------------------------
+
+    private Configuration generateClusterConfiguration(Configuration configuration) {
+        final Configuration resultConfiguration =
+                new Configuration(Preconditions.checkNotNull(configuration));
+
+        final String webTmpDir = configuration.getString(WebOptions.TMP_DIR);
+        final File uniqueWebTmpDir = new File(webTmpDir, "flink-web-" + UUID.randomUUID());
+
+        resultConfiguration.setString(WebOptions.TMP_DIR, uniqueWebTmpDir.getAbsolutePath());
+
+        return resultConfiguration;
+    }
+
+    private CompletableFuture<ApplicationStatus> shutDownAsync(
+            ApplicationStatus applicationStatus,
+            ShutdownBehaviour shutdownBehaviour,
+            @Nullable String diagnostics,
+            boolean cleanupHaData) {
+        if (isShutDown.compareAndSet(false, true)) {
+            LOG.info(
+                    "Shutting {} down with application status {}. Diagnostics {}.",
+                    getClass().getSimpleName(),
+                    applicationStatus,
+                    diagnostics);
+
+            final CompletableFuture<Void> shutDownApplicationFuture =
+                    closeClusterComponent(applicationStatus, shutdownBehaviour, diagnostics);
+
+            final CompletableFuture<Void> serviceShutdownFuture =
+                    FutureUtils.composeAfterwards(
+                            shutDownApplicationFuture, () -> stopClusterServices(cleanupHaData));
+
+            final CompletableFuture<Void> rpcSystemClassLoaderCloseFuture =
+                    FutureUtils.runAfterwards(serviceShutdownFuture, rpcSystem::close);
+
+            final CompletableFuture<Void> cleanupDirectoriesFuture =
+                    FutureUtils.runAfterwards(
+                            rpcSystemClassLoaderCloseFuture, this::cleanupDirectories);
+
+            cleanupDirectoriesFuture.whenComplete(
+                    (Void ignored2, Throwable serviceThrowable) -> {
+                        if (serviceThrowable != null) {
+                            terminationFuture.completeExceptionally(serviceThrowable);
+                        } else {
+                            terminationFuture.complete(applicationStatus);
+                        }
+                    });
+        }
+
+        return terminationFuture;
+    }
+
+    /**
+     * Close cluster components and deregister the Flink application from the resource management
+     * system by signalling the {@link ResourceManager}.
+     *
+     * @param applicationStatus to terminate the application with
+     * @param shutdownBehaviour shutdown behaviour
+     * @param diagnostics additional information about the shut down, can be {@code null}
+     * @return Future which is completed once the shut down
+     */
+    private CompletableFuture<Void> closeClusterComponent(
+            ApplicationStatus applicationStatus,
+            ShutdownBehaviour shutdownBehaviour,
+            @Nullable String diagnostics) {
+        synchronized (lock) {
+            if (clusterComponent != null) {
+                switch (shutdownBehaviour) {
+                    case STOP_APPLICATION:
+                        return clusterComponent.stopApplication(applicationStatus, diagnostics);
+                    case STOP_PROCESS:
+                    default:
+                        return clusterComponent.stopProcess();
+                }
+            } else {
+                return CompletableFuture.completedFuture(null);
+            }
+        }
+    }
+
+    /**
+     * Clean up of temporary directories created by the {@link ClusterEntrypoint}.
+     *
+     * @throws IOException if the temporary directories could not be cleaned up
+     */
+    protected void cleanupDirectories() throws IOException {
+        final String webTmpDir = configuration.getString(WebOptions.TMP_DIR);
+
+        FileUtils.deleteDirectory(new File(webTmpDir));
+    }
+
+    // --------------------------------------------------
+    // Abstract methods
+    // --------------------------------------------------
+
+    protected abstract DispatcherResourceManagerComponentFactory
+            createDispatcherResourceManagerComponentFactory(Configuration configuration)
+                    throws IOException;
+
+    protected abstract ExecutionGraphInfoStore createSerializableExecutionGraphStore(
+            Configuration configuration, ScheduledExecutor scheduledExecutor) throws IOException;
+
+    protected static EntrypointClusterConfiguration parseArguments(String[] args)
+            throws FlinkParseException {
+        final CommandLineParser<EntrypointClusterConfiguration> clusterConfigurationParser =
+                new CommandLineParser<>(new EntrypointClusterConfigurationParserFactory());
+
+        return clusterConfigurationParser.parse(args);
+    }
+
+    protected static Configuration loadConfiguration(
+            EntrypointClusterConfiguration entrypointClusterConfiguration) {
+        final Configuration dynamicProperties =
+                ConfigurationUtils.createConfiguration(
+                        entrypointClusterConfiguration.getDynamicProperties());
+        final Configuration configuration =
+                GlobalConfiguration.loadConfiguration(
+                        entrypointClusterConfiguration.getConfigDir(), dynamicProperties);
+
+        final int restPort = entrypointClusterConfiguration.getRestPort();
+
+        if (restPort >= 0) {
+            configuration.setInteger(RestOptions.PORT, restPort);
+        }
+
+        final String hostname = entrypointClusterConfiguration.getHostname();
+
+        if (hostname != null) {
+            configuration.setString(JobManagerOptions.ADDRESS, hostname);
+        }
+
+        return configuration;
+    }
+
+    // --------------------------------------------------
+    // Helper methods
+    // --------------------------------------------------
+
+    public static void runClusterEntrypoint(ClusterEntrypoint clusterEntrypoint) {
+
+        final String clusterEntrypointName = clusterEntrypoint.getClass().getSimpleName();
+        try {
+            clusterEntrypoint.startCluster();
+        } catch (ClusterEntrypointException e) {
+            LOG.error(
+                    String.format("Could not start cluster entrypoint %s.", clusterEntrypointName),
+                    e);
+            System.exit(STARTUP_FAILURE_RETURN_CODE);
+        }
+
+        int returnCode;
+        Throwable throwable = null;
+
+        try {
+            returnCode = clusterEntrypoint.getTerminationFuture().get().processExitCode();
+        } catch (Throwable e) {
+            throwable = ExceptionUtils.stripExecutionException(e);
+            returnCode = RUNTIME_FAILURE_RETURN_CODE;
+        }
+
+        LOG.info(
+                "Terminating cluster entrypoint process {} with exit code {}.",
+                clusterEntrypointName,
+                returnCode,
+                throwable);
+        System.exit(returnCode);
+    }
+
+    /** Execution mode of the {@link MiniDispatcher}. */
+    public enum ExecutionMode {
+        /** Waits until the job result has been served. */
+        NORMAL,
+
+        /** Directly stops after the job has finished. */
+        DETACHED
+    }
+
+    private enum ShutdownBehaviour {
+        STOP_APPLICATION,
+        STOP_PROCESS,
+    }
 }

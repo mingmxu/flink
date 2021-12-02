@@ -25,14 +25,14 @@ import org.apache.flink.api.common.typeutils.base.LongSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
+import org.apache.flink.runtime.checkpoint.JobManagerTaskRestore;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
-import org.apache.flink.runtime.checkpoint.StateAssignmentOperation;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.jobgraph.OperatorID;
-import org.apache.flink.runtime.jobgraph.OperatorInstanceID;
 import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
+import org.apache.flink.runtime.state.TestTaskStateManager;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -42,318 +42,346 @@ import org.apache.flink.util.TestLogger;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
 import static org.junit.Assert.assertEquals;
 
 /**
- * Tests ensuring correct behaviour of {@link org.apache.flink.runtime.state.ManagedInitializationContext#isRestored}
- * method.
+ * Tests ensuring correct behaviour of {@link
+ * org.apache.flink.runtime.state.ManagedInitializationContext#isRestored} method.
  */
 public class RestoreStreamTaskTest extends TestLogger {
 
-	private static final Set<OperatorID> RESTORED_OPERATORS = ConcurrentHashMap.newKeySet();
+    private static final Map<OperatorID, Long> RESTORED_OPERATORS = new ConcurrentHashMap();
 
-	@Before
-	public void setup() {
-		RESTORED_OPERATORS.clear();
-	}
+    @Before
+    public void setup() {
+        RESTORED_OPERATORS.clear();
+    }
 
-	@Test
-	public void testRestore() throws Exception {
-		OperatorID headOperatorID = new OperatorID(42L, 42L);
-		OperatorID tailOperatorID = new OperatorID(44L, 44L);
-		AcknowledgeStreamMockEnvironment environment1 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new CounterOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.empty());
+    @Test
+    public void testRestore() throws Exception {
 
-		assertEquals(2, environment1.getCheckpointStateHandles().getSubtaskStateMappings().size());
+        OperatorID headOperatorID = new OperatorID(42L, 42L);
+        OperatorID tailOperatorID = new OperatorID(44L, 44L);
 
-		TaskStateSnapshot stateHandles = environment1.getCheckpointStateHandles();
+        JobManagerTaskRestore restore =
+                createRunAndCheckpointOperatorChain(
+                        headOperatorID,
+                        new CounterOperator(),
+                        tailOperatorID,
+                        new CounterOperator(),
+                        Optional.empty());
 
-		AcknowledgeStreamMockEnvironment environment2 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new CounterOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.of(stateHandles));
+        TaskStateSnapshot stateHandles = restore.getTaskStateSnapshot();
 
-		assertEquals(
-			new HashSet<OperatorID>() {{
-				add(headOperatorID);
-				add(tailOperatorID);
-			}},
-			RESTORED_OPERATORS);
-	}
+        assertEquals(2, stateHandles.getSubtaskStateMappings().size());
 
-	@Test
-	public void testRestoreHeadWithNewId() throws Exception {
-		OperatorID tailOperatorID = new OperatorID(44L, 44L);
-		AcknowledgeStreamMockEnvironment environment1 = createRunAndCheckpointOperatorChain(
-			new OperatorID(42L, 42L),
-			new CounterOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.empty());
+        createRunAndCheckpointOperatorChain(
+                headOperatorID,
+                new CounterOperator(),
+                tailOperatorID,
+                new CounterOperator(),
+                Optional.of(restore));
 
-		assertEquals(2, environment1.getCheckpointStateHandles().getSubtaskStateMappings().size());
+        assertEquals(
+                new HashSet<>(Arrays.asList(headOperatorID, tailOperatorID)),
+                RESTORED_OPERATORS.keySet());
+        assertThat(
+                new HashSet<>(RESTORED_OPERATORS.values()),
+                contains(restore.getRestoreCheckpointId()));
+    }
 
-		TaskStateSnapshot stateHandles = environment1.getCheckpointStateHandles();
+    @Test
+    public void testRestoreHeadWithNewId() throws Exception {
 
-		AcknowledgeStreamMockEnvironment environment2 = createRunAndCheckpointOperatorChain(
-			new OperatorID(4242L, 4242L),
-			new CounterOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.of(stateHandles));
+        OperatorID tailOperatorID = new OperatorID(44L, 44L);
 
-		assertEquals(
-			new HashSet<OperatorID>() {{
-				add(tailOperatorID);
-			}},
-			RESTORED_OPERATORS);
-	}
+        JobManagerTaskRestore restore =
+                createRunAndCheckpointOperatorChain(
+                        new OperatorID(42L, 42L),
+                        new CounterOperator(),
+                        tailOperatorID,
+                        new CounterOperator(),
+                        Optional.empty());
 
-	@Test
-	public void testRestoreTailWithNewId() throws Exception {
-		OperatorID headOperatorID = new OperatorID(42L, 42L);
+        TaskStateSnapshot stateHandles = restore.getTaskStateSnapshot();
 
-		AcknowledgeStreamMockEnvironment environment1 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new CounterOperator(),
-			new OperatorID(44L, 44L),
-			new CounterOperator(),
-			Optional.empty());
+        assertEquals(2, stateHandles.getSubtaskStateMappings().size());
 
-		assertEquals(2, environment1.getCheckpointStateHandles().getSubtaskStateMappings().size());
+        createRunAndCheckpointOperatorChain(
+                new OperatorID(4242L, 4242L),
+                new CounterOperator(),
+                tailOperatorID,
+                new CounterOperator(),
+                Optional.of(restore));
 
-		TaskStateSnapshot stateHandles = environment1.getCheckpointStateHandles();
+        assertEquals(Collections.singleton(tailOperatorID), RESTORED_OPERATORS.keySet());
+        assertThat(
+                new HashSet<>(RESTORED_OPERATORS.values()),
+                contains(restore.getRestoreCheckpointId()));
+    }
 
-		AcknowledgeStreamMockEnvironment environment2 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new CounterOperator(),
-			new OperatorID(4444L, 4444L),
-			new CounterOperator(),
-			Optional.of(stateHandles));
+    @Test
+    public void testRestoreTailWithNewId() throws Exception {
+        OperatorID headOperatorID = new OperatorID(42L, 42L);
 
-		assertEquals(
-			new HashSet<OperatorID>() {{
-				add(headOperatorID);
-			}},
-			RESTORED_OPERATORS);
-	}
+        JobManagerTaskRestore restore =
+                createRunAndCheckpointOperatorChain(
+                        headOperatorID,
+                        new CounterOperator(),
+                        new OperatorID(44L, 44L),
+                        new CounterOperator(),
+                        Optional.empty());
 
-	@Test
-	public void testRestoreAfterScaleUp() throws Exception {
-		OperatorID headOperatorID = new OperatorID(42L, 42L);
-		OperatorID tailOperatorID = new OperatorID(44L, 44L);
+        TaskStateSnapshot stateHandles = restore.getTaskStateSnapshot();
+        assertEquals(2, stateHandles.getSubtaskStateMappings().size());
 
-		AcknowledgeStreamMockEnvironment environment1 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new CounterOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.empty());
+        createRunAndCheckpointOperatorChain(
+                headOperatorID,
+                new CounterOperator(),
+                new OperatorID(4444L, 4444L),
+                new CounterOperator(),
+                Optional.of(restore));
 
-		assertEquals(2, environment1.getCheckpointStateHandles().getSubtaskStateMappings().size());
+        assertEquals(Collections.singleton(headOperatorID), RESTORED_OPERATORS.keySet());
+        assertThat(
+                new HashSet<>(RESTORED_OPERATORS.values()),
+                contains(restore.getRestoreCheckpointId()));
+    }
 
-		// test empty state in case of scale up
-		OperatorSubtaskState emptyHeadOperatorState = StateAssignmentOperation.operatorSubtaskStateFrom(
-			new OperatorInstanceID(0, headOperatorID),
-			Collections.emptyMap(),
-			Collections.emptyMap(),
-			Collections.emptyMap(),
-			Collections.emptyMap());
+    @Test
+    public void testRestoreAfterScaleUp() throws Exception {
+        OperatorID headOperatorID = new OperatorID(42L, 42L);
+        OperatorID tailOperatorID = new OperatorID(44L, 44L);
 
-		TaskStateSnapshot stateHandles = environment1.getCheckpointStateHandles();
-		stateHandles.putSubtaskStateByOperatorID(headOperatorID, emptyHeadOperatorState);
+        JobManagerTaskRestore restore =
+                createRunAndCheckpointOperatorChain(
+                        headOperatorID,
+                        new CounterOperator(),
+                        tailOperatorID,
+                        new CounterOperator(),
+                        Optional.empty());
 
-		AcknowledgeStreamMockEnvironment environment2 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new CounterOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.of(stateHandles));
+        TaskStateSnapshot stateHandles = restore.getTaskStateSnapshot();
 
-		assertEquals(
-			new HashSet<OperatorID>() {{
-				add(headOperatorID);
-				add(tailOperatorID);
-			}},
-			RESTORED_OPERATORS);
-	}
+        assertEquals(2, stateHandles.getSubtaskStateMappings().size());
 
-	@Test
-	public void testRestoreWithoutState() throws Exception {
-		OperatorID headOperatorID = new OperatorID(42L, 42L);
-		OperatorID tailOperatorID = new OperatorID(44L, 44L);
+        // test empty state in case of scale up
 
-		AcknowledgeStreamMockEnvironment environment1 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new StatelessOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.empty());
+        OperatorSubtaskState emptyHeadOperatorState = OperatorSubtaskState.builder().build();
 
-		assertEquals(2, environment1.getCheckpointStateHandles().getSubtaskStateMappings().size());
+        stateHandles.putSubtaskStateByOperatorID(headOperatorID, emptyHeadOperatorState);
 
-		TaskStateSnapshot stateHandles = environment1.getCheckpointStateHandles();
+        createRunAndCheckpointOperatorChain(
+                headOperatorID,
+                new CounterOperator(),
+                tailOperatorID,
+                new CounterOperator(),
+                Optional.of(restore));
 
-		AcknowledgeStreamMockEnvironment environment2 = createRunAndCheckpointOperatorChain(
-			headOperatorID,
-			new StatelessOperator(),
-			tailOperatorID,
-			new CounterOperator(),
-			Optional.of(stateHandles));
+        assertEquals(
+                new HashSet<>(Arrays.asList(headOperatorID, tailOperatorID)),
+                RESTORED_OPERATORS.keySet());
+        assertThat(
+                new HashSet<>(RESTORED_OPERATORS.values()),
+                contains(restore.getRestoreCheckpointId()));
+    }
 
-		assertEquals(
-			new HashSet<OperatorID>() {{
-				add(headOperatorID);
-				add(tailOperatorID);
-			}},
-			RESTORED_OPERATORS);
-	}
+    @Test
+    public void testRestoreWithoutState() throws Exception {
+        OperatorID headOperatorID = new OperatorID(42L, 42L);
+        OperatorID tailOperatorID = new OperatorID(44L, 44L);
 
-	private AcknowledgeStreamMockEnvironment createRunAndCheckpointOperatorChain(
-			OperatorID headId,
-			OneInputStreamOperator<String, String> headOperator,
-			OperatorID tailId,
-			OneInputStreamOperator<String, String> tailOperator,
-			Optional<TaskStateSnapshot> stateHandles) throws Exception {
+        JobManagerTaskRestore restore =
+                createRunAndCheckpointOperatorChain(
+                        headOperatorID,
+                        new StatelessOperator(),
+                        tailOperatorID,
+                        new CounterOperator(),
+                        Optional.empty());
 
-		final OneInputStreamTask<String, String> streamTask = new OneInputStreamTask<>();
-		final OneInputStreamTaskTestHarness<String, String> testHarness =
-			new OneInputStreamTaskTestHarness<String, String>(
-				streamTask, 1, 1,
-				BasicTypeInfo.STRING_TYPE_INFO,
-				BasicTypeInfo.STRING_TYPE_INFO);
+        TaskStateSnapshot stateHandles = restore.getTaskStateSnapshot();
+        assertEquals(2, stateHandles.getSubtaskStateMappings().size());
 
-		testHarness.setupOperatorChain(headId, headOperator)
-			.chain(tailId, tailOperator, StringSerializer.INSTANCE)
-			.finish();
+        createRunAndCheckpointOperatorChain(
+                headOperatorID,
+                new StatelessOperator(),
+                tailOperatorID,
+                new CounterOperator(),
+                Optional.of(restore));
 
-		AcknowledgeStreamMockEnvironment environment = new AcknowledgeStreamMockEnvironment(
-			testHarness.jobConfig,
-			testHarness.taskConfig,
-			testHarness.executionConfig,
-			testHarness.memorySize,
-			new MockInputSplitProvider(),
-			testHarness.bufferSize);
+        assertEquals(
+                new HashSet<>(Arrays.asList(headOperatorID, tailOperatorID)),
+                RESTORED_OPERATORS.keySet());
+        assertThat(
+                new HashSet<>(RESTORED_OPERATORS.values()),
+                contains(restore.getRestoreCheckpointId()));
+    }
 
-		if (stateHandles.isPresent()) {
-			streamTask.setInitialState(stateHandles.get());
-		}
-		testHarness.invoke(environment);
-		testHarness.waitForTaskRunning();
+    private JobManagerTaskRestore createRunAndCheckpointOperatorChain(
+            OperatorID headId,
+            OneInputStreamOperator<String, String> headOperator,
+            OperatorID tailId,
+            OneInputStreamOperator<String, String> tailOperator,
+            Optional<JobManagerTaskRestore> restore)
+            throws Exception {
 
-		processRecords(testHarness);
-		triggerCheckpoint(testHarness, environment, streamTask);
+        final OneInputStreamTaskTestHarness<String, String> testHarness =
+                new OneInputStreamTaskTestHarness<>(
+                        OneInputStreamTask::new,
+                        1,
+                        1,
+                        BasicTypeInfo.STRING_TYPE_INFO,
+                        BasicTypeInfo.STRING_TYPE_INFO);
 
-		testHarness.endInput();
-		testHarness.waitForTaskCompletion();
+        testHarness
+                .setupOperatorChain(headId, headOperator)
+                .chain(tailId, tailOperator, StringSerializer.INSTANCE)
+                .finish();
 
-		return environment;
-	}
+        if (restore.isPresent()) {
+            JobManagerTaskRestore taskRestore = restore.get();
+            testHarness.setTaskStateSnapshot(
+                    taskRestore.getRestoreCheckpointId(), taskRestore.getTaskStateSnapshot());
+        }
 
-	private void triggerCheckpoint(
-			OneInputStreamTaskTestHarness<String, String> testHarness,
-			AcknowledgeStreamMockEnvironment environment,
-			OneInputStreamTask<String, String> streamTask) throws Exception {
-		long checkpointId = 1L;
-		CheckpointMetaData checkpointMetaData = new CheckpointMetaData(checkpointId, 1L);
+        StreamMockEnvironment environment =
+                new StreamMockEnvironment(
+                        testHarness.jobConfig,
+                        testHarness.taskConfig,
+                        testHarness.executionConfig,
+                        testHarness.memorySize,
+                        new MockInputSplitProvider(),
+                        testHarness.bufferSize,
+                        testHarness.taskStateManager);
 
-		while (!streamTask.triggerCheckpoint(checkpointMetaData, CheckpointOptions.forCheckpoint())) {}
+        testHarness.invoke(environment);
+        testHarness.waitForTaskRunning();
 
-		environment.getCheckpointLatch().await();
-		assertEquals(checkpointId, environment.getCheckpointId());
-	}
+        OneInputStreamTask<String, String> streamTask = testHarness.getTask();
 
-	private void processRecords(OneInputStreamTaskTestHarness<String, String> testHarness) throws Exception {
-		ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
+        processRecords(testHarness);
+        triggerCheckpoint(testHarness, streamTask);
 
-		testHarness.processElement(new StreamRecord<>("10"), 0, 0);
-		testHarness.processElement(new StreamRecord<>("20"), 0, 0);
-		testHarness.processElement(new StreamRecord<>("30"), 0, 0);
+        TestTaskStateManager taskStateManager = testHarness.taskStateManager;
 
-		testHarness.waitForInputProcessing();
+        JobManagerTaskRestore jobManagerTaskRestore =
+                new JobManagerTaskRestore(
+                        taskStateManager.getReportedCheckpointId(),
+                        taskStateManager.getLastJobManagerTaskStateSnapshot());
 
-		expectedOutput.add(new StreamRecord<>("10"));
-		expectedOutput.add(new StreamRecord<>("20"));
-		expectedOutput.add(new StreamRecord<>("30"));
-		TestHarnessUtil.assertOutputEquals("Output was not correct.", expectedOutput, testHarness.getOutput());
-	}
+        testHarness.endInput();
+        testHarness.waitForTaskCompletion();
+        return jobManagerTaskRestore;
+    }
 
-	private abstract static class RestoreWatchOperator<IN, OUT>
-		extends AbstractStreamOperator<OUT>
-		implements OneInputStreamOperator<IN, OUT> {
+    private void triggerCheckpoint(
+            OneInputStreamTaskTestHarness<String, String> testHarness,
+            OneInputStreamTask<String, String> streamTask)
+            throws Exception {
 
-		@Override
-		public void initializeState(StateInitializationContext context) throws Exception {
-			if (context.isRestored()) {
-				RESTORED_OPERATORS.add(getOperatorID());
-			}
-		}
-	}
+        long checkpointId = 1L;
+        CheckpointMetaData checkpointMetaData = new CheckpointMetaData(checkpointId, 1L);
 
-	/**
-	 * Operator that counts processed messages and keeps result on state.
-	 */
-	private static class CounterOperator extends RestoreWatchOperator<String, String> {
-		private static final long serialVersionUID = 2048954179291813243L;
+        streamTask.triggerCheckpointAsync(
+                checkpointMetaData, CheckpointOptions.forCheckpointWithDefaultLocation());
 
-		private ListState<Long> counterState;
-		private long counter = 0;
+        testHarness.taskStateManager.getWaitForReportLatch().await();
+        long reportedCheckpointId = testHarness.taskStateManager.getReportedCheckpointId();
 
-		@Override
-		public void processElement(StreamRecord<String> element) throws Exception {
-			counter++;
-			output.collect(element);
-		}
+        assertEquals(checkpointId, reportedCheckpointId);
+    }
 
-		@Override
-		public void initializeState(StateInitializationContext context) throws Exception {
-			super.initializeState(context);
+    private void processRecords(OneInputStreamTaskTestHarness<String, String> testHarness)
+            throws Exception {
+        ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
 
-			counterState = context
-				.getOperatorStateStore()
-				.getListState(new ListStateDescriptor<>("counter-state", LongSerializer.INSTANCE));
+        testHarness.processElement(new StreamRecord<>("10"), 0, 0);
+        testHarness.processElement(new StreamRecord<>("20"), 0, 0);
+        testHarness.processElement(new StreamRecord<>("30"), 0, 0);
 
-			if (context.isRestored()) {
-				for (Long value : counterState.get()) {
-					counter += value;
-				}
-				counterState.clear();
-			}
-		}
+        testHarness.waitForInputProcessing();
 
-		@Override
-		public void snapshotState(StateSnapshotContext context) throws Exception {
-			counterState.add(counter);
-		}
-	}
+        expectedOutput.add(new StreamRecord<>("10"));
+        expectedOutput.add(new StreamRecord<>("20"));
+        expectedOutput.add(new StreamRecord<>("30"));
+        TestHarnessUtil.assertOutputEquals(
+                "Output was not correct.", expectedOutput, testHarness.getOutput());
+    }
 
-	/**
-	 * Operator that does nothing except counting state restorations.
-	 */
-	private static class StatelessOperator extends RestoreWatchOperator<String, String> {
+    private abstract static class RestoreWatchOperator<IN, OUT> extends AbstractStreamOperator<OUT>
+            implements OneInputStreamOperator<IN, OUT> {
 
-		private static final long serialVersionUID = 2048954179291813244L;
+        @Override
+        public void initializeState(StateInitializationContext context) throws Exception {
+            assertEquals(
+                    "Restored context id should be set iff is restored",
+                    context.isRestored(),
+                    context.getRestoredCheckpointId().isPresent());
+            if (context.isRestored()) {
+                RESTORED_OPERATORS.put(
+                        getOperatorID(), context.getRestoredCheckpointId().getAsLong());
+            }
+        }
+    }
 
-		@Override
-		public void processElement(StreamRecord<String> element) throws Exception {
-			output.collect(element);
-		}
+    /** Operator that counts processed messages and keeps result on state. */
+    private static class CounterOperator extends RestoreWatchOperator<String, String> {
+        private static final long serialVersionUID = 2048954179291813243L;
 
-		@Override
-		public void snapshotState(StateSnapshotContext context) throws Exception {
-		}
-	}
+        private ListState<Long> counterState;
+        private long counter = 0;
+
+        @Override
+        public void processElement(StreamRecord<String> element) throws Exception {
+            counter++;
+            output.collect(element);
+        }
+
+        @Override
+        public void initializeState(StateInitializationContext context) throws Exception {
+            super.initializeState(context);
+
+            counterState =
+                    context.getOperatorStateStore()
+                            .getListState(
+                                    new ListStateDescriptor<>(
+                                            "counter-state", LongSerializer.INSTANCE));
+
+            if (context.isRestored()) {
+                for (Long value : counterState.get()) {
+                    counter += value;
+                }
+                counterState.clear();
+            }
+        }
+
+        @Override
+        public void snapshotState(StateSnapshotContext context) throws Exception {
+            counterState.add(counter);
+        }
+    }
+
+    /** Operator that does nothing except counting state restorations. */
+    private static class StatelessOperator extends RestoreWatchOperator<String, String> {
+
+        private static final long serialVersionUID = 2048954179291813244L;
+
+        @Override
+        public void processElement(StreamRecord<String> element) throws Exception {
+            output.collect(element);
+        }
+
+        @Override
+        public void snapshotState(StateSnapshotContext context) throws Exception {}
+    }
 }

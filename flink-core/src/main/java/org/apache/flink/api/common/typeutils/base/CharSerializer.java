@@ -18,74 +18,84 @@
 
 package org.apache.flink.api.common.typeutils.base;
 
-import java.io.IOException;
-
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.typeutils.SimpleTypeSerializerSnapshot;
+import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 
+import java.io.IOException;
+
+/** Type serializer for {@code Character}. */
 @Internal
 public final class CharSerializer extends TypeSerializerSingleton<Character> {
 
-	private static final long serialVersionUID = 1L;
-	
-	public static final CharSerializer INSTANCE = new CharSerializer();
-	
-	private static final Character ZERO = Character.valueOf((char)0);
+    private static final long serialVersionUID = 1L;
 
-	@Override
-	public boolean isImmutableType() {
-		return true;
-	}
+    /** Sharable instance of the CharSerializer. */
+    public static final CharSerializer INSTANCE = new CharSerializer();
 
-	@Override
-	public Character createInstance() {
-		return ZERO;
-	}
+    private static final Character ZERO = (char) 0;
 
-	@Override
-	public Character copy(Character from) {
-		return from;
-	}
-	
-	@Override
-	public Character copy(Character from, Character reuse) {
-		return from;
-	}
+    @Override
+    public boolean isImmutableType() {
+        return true;
+    }
 
-	@Override
-	public int getLength() {
-		return 2;
-	}
+    @Override
+    public Character createInstance() {
+        return ZERO;
+    }
 
-	@Override
-	public void serialize(Character record, DataOutputView target) throws IOException {
-		target.writeChar(record.charValue());
-	}
+    @Override
+    public Character copy(Character from) {
+        return from;
+    }
 
-	@Override
-	public Character deserialize(DataInputView source) throws IOException {
-		return Character.valueOf(source.readChar());
-	}
-	
-	@Override
-	public Character deserialize(Character reuse, DataInputView source) throws IOException {
-		return deserialize(source);
-	}
+    @Override
+    public Character copy(Character from, Character reuse) {
+        return from;
+    }
 
-	@Override
-	public void copy(DataInputView source, DataOutputView target) throws IOException {
-		target.writeChar(source.readChar());
-	}
+    @Override
+    public int getLength() {
+        return 2;
+    }
 
-	@Override
-	public boolean canEqual(Object obj) {
-		return obj instanceof CharSerializer;
-	}
+    @Override
+    public void serialize(Character record, DataOutputView target) throws IOException {
+        target.writeChar(record);
+    }
 
-	@Override
-	protected boolean isCompatibleSerializationFormatIdentifier(String identifier) {
-		return super.isCompatibleSerializationFormatIdentifier(identifier)
-			|| identifier.equals(CharValueSerializer.class.getCanonicalName());
-	}
+    @Override
+    public Character deserialize(DataInputView source) throws IOException {
+        return source.readChar();
+    }
+
+    @Override
+    public Character deserialize(Character reuse, DataInputView source) throws IOException {
+        return deserialize(source);
+    }
+
+    @Override
+    public void copy(DataInputView source, DataOutputView target) throws IOException {
+        target.writeChar(source.readChar());
+    }
+
+    @Override
+    public TypeSerializerSnapshot<Character> snapshotConfiguration() {
+        return new CharSerializerSnapshot();
+    }
+
+    // ------------------------------------------------------------------------
+
+    /** Serializer configuration snapshot for compatibility and format evolution. */
+    @SuppressWarnings("WeakerAccess")
+    public static final class CharSerializerSnapshot
+            extends SimpleTypeSerializerSnapshot<Character> {
+
+        public CharSerializerSnapshot() {
+            super(() -> INSTANCE);
+        }
+    }
 }

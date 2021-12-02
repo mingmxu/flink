@@ -19,75 +19,81 @@
 
 package org.apache.flink.graph.types.valuearray;
 
+import org.apache.flink.api.common.typeutils.SimpleTypeSerializerSnapshot;
+import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.api.common.typeutils.base.TypeSerializerSingleton;
-import org.apache.flink.api.common.typeutils.base.array.LongPrimitiveArraySerializer;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 
 import java.io.IOException;
 
-/**
- * Specialized serializer for {@code DoubleValueArray}.
- */
+/** Specialized serializer for {@code DoubleValueArray}. */
 public final class DoubleValueArraySerializer extends TypeSerializerSingleton<DoubleValueArray> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	@Override
-	public boolean isImmutableType() {
-		return false;
-	}
+    @Override
+    public boolean isImmutableType() {
+        return false;
+    }
 
-	@Override
-	public DoubleValueArray createInstance() {
-		return new DoubleValueArray();
-	}
+    @Override
+    public DoubleValueArray createInstance() {
+        return new DoubleValueArray();
+    }
 
-	@Override
-	public DoubleValueArray copy(DoubleValueArray from) {
-		return copy(from, new DoubleValueArray());
-	}
+    @Override
+    public DoubleValueArray copy(DoubleValueArray from) {
+        return copy(from, new DoubleValueArray());
+    }
 
-	@Override
-	public DoubleValueArray copy(DoubleValueArray from, DoubleValueArray reuse) {
-		reuse.setValue(from);
-		return reuse;
-	}
+    @Override
+    public DoubleValueArray copy(DoubleValueArray from, DoubleValueArray reuse) {
+        reuse.setValue(from);
+        return reuse;
+    }
 
-	@Override
-	public int getLength() {
-		return -1;
-	}
+    @Override
+    public int getLength() {
+        return -1;
+    }
 
-	@Override
-	public void serialize(DoubleValueArray record, DataOutputView target) throws IOException {
-		record.write(target);
-	}
+    @Override
+    public void serialize(DoubleValueArray record, DataOutputView target) throws IOException {
+        record.write(target);
+    }
 
-	@Override
-	public DoubleValueArray deserialize(DataInputView source) throws IOException {
-		return deserialize(new DoubleValueArray(), source);
-	}
+    @Override
+    public DoubleValueArray deserialize(DataInputView source) throws IOException {
+        return deserialize(new DoubleValueArray(), source);
+    }
 
-	@Override
-	public DoubleValueArray deserialize(DoubleValueArray reuse, DataInputView source) throws IOException {
-		reuse.read(source);
-		return reuse;
-	}
+    @Override
+    public DoubleValueArray deserialize(DoubleValueArray reuse, DataInputView source)
+            throws IOException {
+        reuse.read(source);
+        return reuse;
+    }
 
-	@Override
-	public void copy(DataInputView source, DataOutputView target) throws IOException {
-		DoubleValueArray.copyInternal(source, target);
-	}
+    @Override
+    public void copy(DataInputView source, DataOutputView target) throws IOException {
+        DoubleValueArray.copyInternal(source, target);
+    }
 
-	@Override
-	public boolean canEqual(Object obj) {
-		return obj instanceof DoubleValueArraySerializer;
-	}
+    // -----------------------------------------------------------------------------------
 
-	@Override
-	protected boolean isCompatibleSerializationFormatIdentifier(String identifier) {
-		return super.isCompatibleSerializationFormatIdentifier(identifier)
-			|| identifier.equals(LongPrimitiveArraySerializer.class.getCanonicalName());
-	}
+    @Override
+    public TypeSerializerSnapshot<DoubleValueArray> snapshotConfiguration() {
+        return new DoubleValueArraySerializerSnapshot();
+    }
+
+    /** Serializer configuration snapshot for compatibility and format evolution. */
+    @SuppressWarnings("WeakerAccess")
+    public static final class DoubleValueArraySerializerSnapshot
+            extends SimpleTypeSerializerSnapshot<DoubleValueArray> {
+
+        public DoubleValueArraySerializerSnapshot() {
+            super(DoubleValueArraySerializer::new);
+        }
+    }
 }

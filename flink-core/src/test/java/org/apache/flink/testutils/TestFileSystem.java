@@ -18,10 +18,6 @@
 
 package org.apache.flink.testutils;
 
-import java.io.IOException;
-import java.net.URI;
-
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FSDataInputStream;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
@@ -30,72 +26,72 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.fs.local.LocalFileStatus;
 import org.apache.flink.core.fs.local.LocalFileSystem;
 
+import java.io.IOException;
+import java.net.URI;
+
 /**
- * A test file system. This also has a service entry in the test
- * resources, to be loaded during tests.
+ * A test file system. This also has a service entry in the test resources, to be loaded during
+ * tests.
  */
 public class TestFileSystem extends LocalFileSystem {
 
-	public static final String SCHEME = "test";
+    public static final String SCHEME = "test";
 
-	private static int streamOpenCounter;
-	
-	public static int getNumtimeStreamOpened() {
-		return streamOpenCounter;
-	}
-	
-	public static void resetStreamOpenCounter() {
-		streamOpenCounter = 0;
-	}
-	
-	@Override
-	public FSDataInputStream open(Path f, int bufferSize) throws IOException {
-		streamOpenCounter++;
-		return super.open(f, bufferSize);
-	}
+    private static int streamOpenCounter;
 
-	@Override
-	public FSDataInputStream open(Path f) throws IOException {
-		streamOpenCounter++;
-		return super.open(f);
-	}
-	
-	@Override
-	public FileStatus getFileStatus(Path f) throws IOException {
-		LocalFileStatus status = (LocalFileStatus) super.getFileStatus(f);
-		return new LocalFileStatus(status.getFile(), this);
-	}
-	
-	@Override
-	public FileStatus[] listStatus(Path f) throws IOException {
-		FileStatus[] stati = super.listStatus(f);
-		LocalFileStatus[] newStati = new LocalFileStatus[stati.length];
-		for (int i = 0; i < stati.length; i++) {
-			newStati[i] = new LocalFileStatus(((LocalFileStatus) stati[i]).getFile(), this);
-		}
-		return newStati;
-	}
+    public static int getNumtimeStreamOpened() {
+        return streamOpenCounter;
+    }
 
-	@Override
-	public URI getUri() {
-		return URI.create(SCHEME + ":///");
-	}
+    public static void resetStreamOpenCounter() {
+        streamOpenCounter = 0;
+    }
 
-	// ------------------------------------------------------------------------
+    @Override
+    public FSDataInputStream open(Path f, int bufferSize) throws IOException {
+        streamOpenCounter++;
+        return super.open(f, bufferSize);
+    }
 
-	public static final class TestFileSystemFactory implements FileSystemFactory {
+    @Override
+    public FSDataInputStream open(Path f) throws IOException {
+        streamOpenCounter++;
+        return super.open(f);
+    }
 
-		@Override
-		public String getScheme() {
-			return SCHEME;
-		}
+    @Override
+    public FileStatus getFileStatus(Path f) throws IOException {
+        LocalFileStatus status = (LocalFileStatus) super.getFileStatus(f);
+        return new LocalFileStatus(status.getFile(), this);
+    }
 
-		@Override
-		public void configure(Configuration config) {}
+    @Override
+    public FileStatus[] listStatus(Path f) throws IOException {
+        FileStatus[] stati = super.listStatus(f);
+        LocalFileStatus[] newStati = new LocalFileStatus[stati.length];
+        for (int i = 0; i < stati.length; i++) {
+            newStati[i] = new LocalFileStatus(((LocalFileStatus) stati[i]).getFile(), this);
+        }
+        return newStati;
+    }
 
-		@Override
-		public FileSystem create(URI fsUri) throws IOException {
-			return new TestFileSystem();
-		}
-	}
+    @Override
+    public URI getUri() {
+        return URI.create(SCHEME + ":///");
+    }
+
+    // ------------------------------------------------------------------------
+
+    public static final class TestFileSystemFactory implements FileSystemFactory {
+
+        @Override
+        public String getScheme() {
+            return SCHEME;
+        }
+
+        @Override
+        public FileSystem create(URI fsUri) throws IOException {
+            return new TestFileSystem();
+        }
+    }
 }

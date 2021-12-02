@@ -33,62 +33,67 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.io.File;
+import java.util.UUID;
 
-/**
- * Test for {@link PageRank}.
- */
+/** Test for {@link PageRank}. */
 @RunWith(Parameterized.class)
 public class PageRankITCase extends MultipleProgramsTestBase {
 
-	public PageRankITCase(TestExecutionMode mode){
-		super(mode);
-	}
+    public PageRankITCase(TestExecutionMode mode) {
+        super(mode);
+    }
 
-	private String verticesPath;
-	private String edgesPath;
-	private String resultPath;
-	private String expected;
+    private String verticesPath;
+    private String edgesPath;
+    private String resultPath;
+    private String expected;
 
-	@Rule
-	public TemporaryFolder tempFolder = new TemporaryFolder();
+    @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
 
-	@Before
-	public void before() throws Exception{
-		resultPath = tempFolder.newFile().toURI().toString();
-		File verticesFile = tempFolder.newFile();
-		FileUtils.writeFileUtf8(verticesFile, PageRankData.VERTICES);
+    @Before
+    public void before() throws Exception {
+        final File folder = tempFolder.newFolder();
+        final File resultFile = new File(folder, UUID.randomUUID().toString());
+        resultPath = resultFile.toURI().toString();
 
-		File edgesFile = tempFolder.newFile();
-		FileUtils.writeFileUtf8(edgesFile, PageRankData.EDGES);
+        File verticesFile = tempFolder.newFile();
+        FileUtils.writeFileUtf8(verticesFile, PageRankData.VERTICES);
 
-		verticesPath = verticesFile.toURI().toString();
-		edgesPath = edgesFile.toURI().toString();
-	}
+        File edgesFile = tempFolder.newFile();
+        FileUtils.writeFileUtf8(edgesFile, PageRankData.EDGES);
 
-	@After
-	public void after() throws Exception{
-		compareKeyValuePairsWithDelta(expected, resultPath, " ", 0.01);
-	}
+        verticesPath = verticesFile.toURI().toString();
+        edgesPath = edgesFile.toURI().toString();
+    }
 
-	@Test
-	public void testPageRankSmallNumberOfIterations() throws Exception {
-		PageRank.main(new String[]{
-				"--pages", verticesPath,
-				"--links", edgesPath,
-				"--output", resultPath,
-				"--numPages", PageRankData.NUM_VERTICES + "",
-				"--iterations", "3"});
-		expected =  PageRankData.RANKS_AFTER_3_ITERATIONS;
-	}
+    @After
+    public void after() throws Exception {
+        compareKeyValuePairsWithDelta(expected, resultPath, " ", 0.01);
+    }
 
-	@Test
-	public void testPageRankWithConvergenceCriterion() throws Exception {
-		PageRank.main(new String[]{
-				"--pages", verticesPath,
-				"--links", edgesPath,
-				"--output", resultPath,
-				"--numPages", PageRankData.NUM_VERTICES + "",
-				"--vertices", "1000"});
-		expected = PageRankData.RANKS_AFTER_EPSILON_0_0001_CONVERGENCE;
-	}
+    @Test
+    public void testPageRankSmallNumberOfIterations() throws Exception {
+        PageRank.main(
+                new String[] {
+                    "--pages", verticesPath,
+                    "--links", edgesPath,
+                    "--output", resultPath,
+                    "--numPages", PageRankData.NUM_VERTICES + "",
+                    "--iterations", "3"
+                });
+        expected = PageRankData.RANKS_AFTER_3_ITERATIONS;
+    }
+
+    @Test
+    public void testPageRankWithConvergenceCriterion() throws Exception {
+        PageRank.main(
+                new String[] {
+                    "--pages", verticesPath,
+                    "--links", edgesPath,
+                    "--output", resultPath,
+                    "--numPages", PageRankData.NUM_VERTICES + "",
+                    "--vertices", "1000"
+                });
+        expected = PageRankData.RANKS_AFTER_EPSILON_0_0001_CONVERGENCE;
+    }
 }

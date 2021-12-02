@@ -20,39 +20,43 @@ package org.apache.flink.runtime.resourcemanager;
 
 import org.apache.flink.util.AbstractID;
 
+import javax.annotation.Nullable;
+
 import java.util.UUID;
 
-/**
- * Fencing token for the {@link ResourceManager}.
- */
+/** Fencing token for the {@link ResourceManager}. */
 public class ResourceManagerId extends AbstractID {
 
-	private static final long serialVersionUID = -6042820142662137374L;
+    private static final long serialVersionUID = -6042820142662137374L;
 
-	public ResourceManagerId(byte[] bytes) {
-		super(bytes);
-	}
+    /** Generates a new random ResourceManagerId. */
+    private ResourceManagerId() {}
 
-	public ResourceManagerId(long lowerPart, long upperPart) {
-		super(lowerPart, upperPart);
-	}
+    /** Creates a ResourceManagerId that takes the bits from the given UUID. */
+    private ResourceManagerId(UUID uuid) {
+        super(uuid.getLeastSignificantBits(), uuid.getMostSignificantBits());
+    }
 
-	public ResourceManagerId(AbstractID id) {
-		super(id);
-	}
+    /** Creates a UUID with the bits from this ResourceManagerId. */
+    public UUID toUUID() {
+        return new UUID(getUpperPart(), getLowerPart());
+    }
 
-	public ResourceManagerId() {
-	}
+    /** Generates a new random ResourceManagerId. */
+    public static ResourceManagerId generate() {
+        return new ResourceManagerId();
+    }
 
-	public ResourceManagerId(UUID uuid) {
-		this(uuid.getLeastSignificantBits(), uuid.getMostSignificantBits());
-	}
+    /** Creates a ResourceManagerId that corresponds to the given UUID. */
+    public static ResourceManagerId fromUuid(UUID uuid) {
+        return new ResourceManagerId(uuid);
+    }
 
-	public UUID toUUID() {
-		return new UUID(getUpperPart(), getLowerPart());
-	}
-
-	public static ResourceManagerId generate() {
-		return new ResourceManagerId();
-	}
+    /**
+     * If the given uuid is null, this returns null, otherwise a ResourceManagerId that corresponds
+     * to the UUID, via {@link #ResourceManagerId(UUID)}.
+     */
+    public static ResourceManagerId fromUuidOrNull(@Nullable UUID uuid) {
+        return uuid == null ? null : new ResourceManagerId(uuid);
+    }
 }

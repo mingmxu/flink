@@ -23,25 +23,36 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-filesystems</artifactId>
-		<version>1.5-SNAPSHOT</version>
+		<version>1.15-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
 	<artifactId>flink-s3-fs-hadoop</artifactId>
-	<name>flink-s3-fs-hadoop</name>
+	<name>Flink : FileSystems : S3 FS Hadoop</name>
 
 	<packaging>jar</packaging>
 
-	<properties>
-		<!-- Do not change this without updating the copied Configuration class! -->
-		<s3hadoop.hadoop.version>2.8.1</s3hadoop.hadoop.version>
-		<s3hadoop.aws.version>1.11.95</s3hadoop.aws.version>
-	</properties>
+	<dependencyManagement>
+		<dependencies>
+			<!-- Override the flink-parent dependencyManagement definition for hadoop-common to ensure
+				${fs.hadoopshaded.version} is used for this file system -->
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-common</artifactId>
+				<version>${fs.hadoopshaded.version}</version>
+			</dependency>
 
+			<dependency>
+				<!-- Bumped for security purposes -->
+				<groupId>commons-beanutils</groupId>
+				<artifactId>commons-beanutils</artifactId>
+				<version>1.9.4</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 	<dependencies>
 
-		<!-- Flink core -->
-
+		<!-- Flink's file system abstraction (compiled against, not bundled) -->
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-core</artifactId>
@@ -49,168 +60,112 @@ under the License.
 			<scope>provided</scope>
 		</dependency>
 
-		<!-- File system builds on the Hadoop file system support -->
+		<!-- S3 base -->
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-s3-fs-base</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
+		<dependency>
+			<!-- Hadoop requires jaxb-api for javax.xml.bind.JAXBException -->
+			<groupId>javax.xml.bind</groupId>
+			<artifactId>jaxb-api</artifactId>
+			<version>${jaxb.api.version}</version>
+			<!-- packaged as an optional dependency that is only accessible on Java 11+ -->
+			<scope>provided</scope>
+		</dependency>
+
+		<!-- for the behavior test suite -->
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-core</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+			<type>test-jar</type>
+		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-hadoop-fs</artifactId>
 			<version>${project.version}</version>
-
-			<!-- this exclusion is only needed to run tests in the IDE, pre shading,
-				because the optional Hadoop dependency is also pulled in for tests -->
-			<exclusions>
-				<exclusion>
-					<groupId>org.apache.flink</groupId>
-					<artifactId>flink-shaded-hadoop2</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-
-		<!-- Hadoop's S3a file system -->
-
-		<dependency>
-			<groupId>org.apache.hadoop</groupId>
-			<artifactId>hadoop-client</artifactId>
-			<version>${s3hadoop.hadoop.version}</version>
-			<exclusions>
-				<exclusion>
-					<groupId>org.apache.hadoop</groupId>
-					<artifactId>hadoop-mapreduce-client-core</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.hadoop</groupId>
-					<artifactId>hadoop-yarn-api</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.hadoop</groupId>
-					<artifactId>hadoop-mapreduce-client-jobclient</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.hadoop</groupId>
-					<artifactId>hadoop-mapreduce-client-app</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.avro</groupId>
-					<artifactId>avro</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>javax.servlet.jsp</groupId>
-					<artifactId>jsp-api</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.directory.server</groupId>
-					<artifactId>apacheds-kerberos-codec</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.curator</groupId>
-					<artifactId>curator-client</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.curator</groupId>
-					<artifactId>curator-framework</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.curator</groupId>
-					<artifactId>curator-recipes</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.zookeeper</groupId>
-					<artifactId>zookeeper</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-
-		<dependency>
-			<groupId>org.apache.hadoop</groupId>
-			<artifactId>hadoop-aws</artifactId>
-			<version>${s3hadoop.hadoop.version}</version>
-			<exclusions>
-				<exclusion>
-					<groupId>org.apache.avro</groupId>
-					<artifactId>avro</artifactId>
-				</exclusion>
-				<!-- The aws-java-sdk-core requires jackson 2.6, but
-					hadoop pulls in 2.3 -->
-				<exclusion>
-					<groupId>com.fasterxml.jackson.core</groupId>
-					<artifactId>jackson-annotations</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>com.fasterxml.jackson.core</groupId>
-					<artifactId>jackson-core</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>com.fasterxml.jackson.core</groupId>
-					<artifactId>jackson-databind</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-
-		<dependency>
-			<groupId>com.amazonaws</groupId>
-			<artifactId>aws-java-sdk-core</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>com.amazonaws</groupId>
-			<artifactId>aws-java-sdk-kms</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>com.amazonaws</groupId>
-			<artifactId>aws-java-sdk-s3</artifactId>
-		</dependency>
-
-		<!-- make sure that also logger and JSR is provided -->
-
-		<dependency>
-			<groupId>org.slf4j</groupId>
-			<artifactId>slf4j-api</artifactId>
-			<scope>provided</scope>
-		</dependency>
-
-		<dependency>
-			<groupId>com.google.code.findbugs</groupId>
-			<artifactId>jsr305</artifactId>
-			<scope>provided</scope>
-		</dependency>
-
-		<!-- test dependencies -->
-
-		<dependency>
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-test-utils-junit</artifactId>
-			<version>${project.version}</version>
 			<scope>test</scope>
+			<type>test-jar</type>
 		</dependency>
 	</dependencies>
 
-	<!-- We need to bump the AWS dependencies compared to the ones referenced
-    by Hadoop, because the older versions have bugs affecting this project -->
-	<dependencyManagement>
-		<dependencies>
-			<dependency>
-				<groupId>com.amazonaws</groupId>
-				<artifactId>aws-java-sdk-core</artifactId>
-				<version>${s3hadoop.aws.version}</version>
-			</dependency>
-	
-			<dependency>
-				<groupId>com.amazonaws</groupId>
-				<artifactId>aws-java-sdk-kms</artifactId>
-				<version>${s3hadoop.aws.version}</version>
-			</dependency>
-	
-			<dependency>
-				<groupId>com.amazonaws</groupId>
-				<artifactId>aws-java-sdk-s3</artifactId>
-				<version>${s3hadoop.aws.version}</version>
-			</dependency>
-		</dependencies>
-	</dependencyManagement>
-
 	<build>
 		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-jar-plugin</artifactId>
+				<executions>
+					<execution>
+						<goals>
+							<goal>jar</goal>
+						</goals>
+					</execution>
+				</executions>
+				<configuration>
+					<archive>
+						<manifestEntries>
+							<!-- jaxb-api is packaged as an optional dependency that is only accessible on Java 11 -->
+							<Multi-Release>true</Multi-Release>
+						</manifestEntries>
+					</archive>
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-dependency-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>copy-javax-jars</id>
+						<phase>process-resources</phase>
+						<goals>
+							<goal>copy</goal>
+						</goals>
+					</execution>
+				</executions>
+				<configuration>
+					<artifactItems>
+						<artifactItem>
+							<groupId>javax.xml.bind</groupId>
+							<artifactId>jaxb-api</artifactId>
+							<version>${jaxb.api.version}</version>
+							<type>jar</type>
+							<overWrite>true</overWrite>
+						</artifactItem>
+					</artifactItems>
+					<outputDirectory>${project.build.directory}/temporary</outputDirectory>
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-antrun-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>unpack-javax-libraries</id>
+						<phase>process-resources</phase>
+						<goals>
+							<goal>run</goal>
+						</goals>
+						<configuration>
+							<target>
+								<echo message="unpacking javax jars"/>
+								<unzip dest="${project.build.directory}/classes/META-INF/versions/11">
+									<fileset dir="${project.build.directory}/temporary">
+										<include name="*"/>
+									</fileset>
+								</unzip>
+							</target>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-shade-plugin</artifactId>
@@ -222,120 +177,50 @@ under the License.
 							<goal>shade</goal>
 						</goals>
 						<configuration>
-							<shadeTestJar>false</shadeTestJar>
 							<artifactSet>
 								<includes>
 									<include>*:*</include>
 								</includes>
 							</artifactSet>
 							<relocations>
-								<relocation>
-									<pattern>com.amazonaws</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.com.amazonaws</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>com.fasterxml</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.com.fasterxml</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>com.google</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.com.google</shadedPattern>
-									<excludes>
-										<!-- provided -->
-										<exclude>com.google.code.findbugs.**</exclude>
-									</excludes>
-								</relocation>
-								<relocation>
-									<pattern>com.nimbusds</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.com.nimbusds</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>com.squareup</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.com.squareup</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>net.jcip</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.net.jcip</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>net.minidev</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.net.minidev</shadedPattern>
-								</relocation>
-
-								<!-- relocate everything from the flink-hadoop-fs project -->
+								<!-- shade Flink's Hadoop FS adapter classes, forces plugin classloader for them -->
 								<relocation>
 									<pattern>org.apache.flink.runtime.fs.hdfs</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.apache.flink.runtime.fs.hdfs</shadedPattern>
+									<shadedPattern>org.apache.flink.fs.s3hadoop.common</shadedPattern>
 								</relocation>
+								<!-- shade Flink's Hadoop FS utility classes, forces plugin classloader for them -->
 								<relocation>
 									<pattern>org.apache.flink.runtime.util</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.apache.flink.runtime.util</shadedPattern>
-									<includes>
-										<include>org.apache.flink.runtime.util.**Hadoop*</include>
-									</includes>
-								</relocation>
-
-								<relocation>
-									<pattern>org.apache</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.apache</shadedPattern>
-									<excludes>
-										<!-- keep all other classes of flink as they are (exceptions above) -->
-										<exclude>org.apache.flink.**</exclude>
-										<exclude>org.apache.log4j.**</exclude> <!-- provided -->
-									</excludes>
-								</relocation>
-								<relocation>
-									<pattern>org.codehaus</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.codehaus</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>org.joda</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.joda</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>org.mortbay</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.mortbay</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>org.tukaani</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.tukaani</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>org.znerd</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.org.znerd</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>okio</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.okio</shadedPattern>
-								</relocation>
-								<relocation>
-									<pattern>software.amazon</pattern>
-									<shadedPattern>org.apache.flink.fs.s3hadoop.shaded.software.amazon</shadedPattern>
+									<shadedPattern>org.apache.flink.fs.s3hadoop.common</shadedPattern>
 								</relocation>
 							</relocations>
 							<filters>
 								<filter>
 									<artifact>*</artifact>
 									<excludes>
-										<exclude>log4j.properties</exclude>
+										<exclude>.gitkeep</exclude>
 										<exclude>mime.types</exclude>
+										<exclude>mozilla/**</exclude>
+										<exclude>META-INF/maven/**</exclude>
+										<exclude>META-INF/LICENSE.txt</exclude>
+									</excludes>
+								</filter>
+								<filter>
+									<artifact>*</artifact>
+									<excludes>
 										<exclude>properties.dtd</exclude>
 										<exclude>PropertyList-1.0.dtd</exclude>
-										<exclude>models/**</exclude>
-										<exclude>mozilla/**</exclude>
-										<exclude>META-INF/maven/com*/**</exclude>
-										<exclude>META-INF/maven/net*/**</exclude>
-										<exclude>META-INF/maven/software*/**</exclude>
-										<exclude>META-INF/maven/joda*/**</exclude>
-										<exclude>META-INF/maven/org.mortbay.jetty/**</exclude>
-										<exclude>META-INF/maven/org.apache.h*/**</exclude>
-										<exclude>META-INF/maven/org.apache.commons/**</exclude>
-										<exclude>META-INF/maven/org.apache.flink/flink-hadoop-fs/**</exclude>
-										<exclude>META-INF/maven/org.apache.flink/force-shading/**</exclude>
-										<!-- we use our own "shaded" core-default.xml: core-default-shaded.xml -->
-										<exclude>core-default.xml</exclude>
-										<!-- we only add a core-site.xml with unshaded classnames for the unit tests -->
-										<exclude>core-site.xml</exclude>
+										<exclude>META-INF/services/javax.xml.stream.*</exclude>
+										<exclude>META-INF/LICENSE.txt</exclude>
+									</excludes>
+								</filter>
+								<filter>
+									<artifact>com.amazonaws:aws-java-sdk-s3</artifact>
+									<!-- Make sure we are using the overridden XmlResponsesSaxParser of flink-s3-fs-base.
+										Filter must be removed as soon as XmlResponsesSaxParser of this module is
+										dropped, for example when discontinuing support for Java 8. -->
+									<excludes>
+										<exclude>com/amazonaws/services/s3/model/transform/XmlResponsesSaxParser**</exclude>
 									</excludes>
 								</filter>
 							</filters>
